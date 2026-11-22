@@ -66,6 +66,13 @@ python3 -m healthcheck.cli --config config.json --once
   check of an endpoint sets its baseline and sends nothing; a failed
   delivery is logged as a warning and never stops the monitor.
 - `http` endpoint — `url` required; ok on status 200–399.
+  `cafile`, `cert`, and `key` are optional: `cafile` is a PEM bundle
+  of certificate authorities to trust for an `https://` endpoint
+  (for a private or self-signed CA); `cert` and `key` are a client
+  certificate and private key for mutual TLS. Without them, an
+  `https://` endpoint is verified against the system CA store, as
+  before. A bad cert file makes the check fail, never crash. The
+  TLS options are ignored for plain `http://` URLs.
 - `tcp` endpoint — `host` and `port` required; ok when the connect
   succeeds.
 
@@ -85,9 +92,18 @@ make test   # python3 -m unittest discover -s tests -v
 ## Roadmap
 
 - [x] Configurable alert hooks (webhook URL) — done in 0.4.0.
-- HTTPS endpoints with custom CA / client certificates.
+- [x] HTTPS endpoints with custom CA / client certificates — done
+  in 0.5.0.
 
 ## Changelog
+
+- **0.5.0** — HTTPS endpoints with a custom CA bundle and client
+  certificates: `cafile`, `cert`, and `key` per `http` endpoint.
+  `cafile` trusts a private/self-signed CA, `cert` + `key` do
+  mutual TLS. Without them, `https://` checks verify against the
+  system CA store as before; a bad cert file fails the check
+  instead of crashing. Tested against a local TLS server with
+  openssl-generated certs — no live external server needed.
 
 - **0.4.0** — Configurable alert hooks: `webhook_url` in the config
   (or `--webhook-url`) POSTs a JSON payload to the given URL when an

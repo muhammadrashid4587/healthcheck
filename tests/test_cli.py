@@ -138,8 +138,8 @@ class OnceModePersistenceTests(unittest.TestCase):
 
 
 class VersionTests(unittest.TestCase):
-    def test_version_is_0_4_0(self):
-        self.assertEqual(__version__, "0.4.0")
+    def test_version_is_0_5_0(self):
+        self.assertEqual(__version__, "0.5.0")
 
 
 if __name__ == "__main__":
