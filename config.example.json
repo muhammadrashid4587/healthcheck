@@ -1,0 +1,1 @@
+{"endpoints":[{"name":"example","timeout":5,"type":"http","url":"https://example.com"},{"host":"127.0.0.1","name":"localhost-ssh","port":22,"timeout":5,"type":"tcp"}],"history":100,"interval_seconds":30}
