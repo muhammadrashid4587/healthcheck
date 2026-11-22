@@ -1,7 +1,9 @@
 """healthcheck CLI: check endpoints on a schedule, serve the dashboard.
 
-Alerts are just log lines — no email, no SMS, no webhooks. Run it under
-whatever supervisor you already use and watch the logs.
+Alerts are log lines, plus an optional webhook: when an endpoint changes
+state, a JSON payload is POSTed to the configured webhook URL (see
+`webhook_url` in the config, or --webhook-url). No email, no SMS.
+Run it under whatever supervisor you already use and watch the logs.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ import logging
 import threading
 import time
 
+from .alerts import WebhookAlerter
 from .checker import check_endpoint
 from .server import serve
 from .store import History
@@ -75,10 +78,29 @@ def save_history(history, path):
         log.warning("could not save history to %s (%s)", path, exc)
 
 
-def check_all(endpoints, history, timeout=5.0):
+def webhook_url(cfg, args):
+    """The alert webhook URL, or None to alert by log lines only.
+
+    The --webhook-url flag wins over the config file's "webhook_url"
+    key; either may be absent, in which case no webhook is called.
+    """
+    if getattr(args, "webhook_url", None):
+        return args.webhook_url
+    return cfg.get("webhook_url")
+
+
+def make_alerter(cfg, args):
+    """A WebhookAlerter for the configured URL, or None if none is set."""
+    url = webhook_url(cfg, args) if args is not None else cfg.get("webhook_url")
+    return WebhookAlerter(url) if url else None
+
+
+def check_all(endpoints, history, timeout=5.0, alerter=None):
     for ep in endpoints:
         result = check_endpoint(ep, timeout=timeout)
         history.record(result)
+        if alerter is not None:
+            alerter.notify(result)
         detail = (f"HTTP {result.status_code}" if result.status_code
                   else (result.error or ""))
         log.info("%s %s %.1f ms %s", result.name,
@@ -91,6 +113,7 @@ def run_forever(cfg, host, port, args=None):
     interval = cfg.get("interval_seconds", 30)
     path = history_path(cfg, args) if args is not None else cfg.get("history_file")
     history = load_history(path, maxlen=cfg.get("history", 100))
+    alerter = make_alerter(cfg, args)
     if path and history.names():
         log.info("loaded history for %d endpoint(s) from %s",
                  len(history.names()), path)
@@ -98,7 +121,7 @@ def run_forever(cfg, host, port, args=None):
 
     def loop():
         while not stop.is_set():
-            check_all(endpoints, history)
+            check_all(endpoints, history, alerter=alerter)
             save_history(history, path)
             stop.wait(interval)
 
@@ -127,12 +150,17 @@ def main(argv=None):
     parser.add_argument("--history-file", default=None,
                         help="persist check history to this JSON file "
                              "(overrides the config file's history_file)")
+    parser.add_argument("--webhook-url", default=None,
+                        help="POST a JSON alert to this URL when an "
+                             "endpoint changes state (overrides the "
+                             "config file's webhook_url)")
     args = parser.parse_args(argv)
     cfg = load_config(args.config)
     if args.once:
         path = history_path(cfg, args)
         history = load_history(path, maxlen=cfg.get("history", 100))
-        check_all(cfg.get("endpoints", []), history)
+        check_all(cfg.get("endpoints", []), history,
+                  alerter=make_alerter(cfg, args))
         save_history(history, path)
         return 0
     run_forever(cfg, args.host, args.port, args)

@@ -2,10 +2,11 @@
 
 Pure Python 3 standard library. Checks HTTP and TCP endpoints on a
 schedule, tracks uptime per endpoint, and serves a small status
-dashboard. Alerts are just log lines.
+dashboard. Alerts are log lines, plus an optional webhook that fires
+when an endpoint changes state.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 from .checker import CheckResult, check_endpoint, check_http, check_tcp
 from .store import History

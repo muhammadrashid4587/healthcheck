@@ -18,8 +18,8 @@ endpoint, and serves a small status dashboard over `http.server`.
 ## What it is not
 
 - Not a replacement for a real observability platform (no metrics
-  pipeline, no alerting integrations, no distributed tracing).
-- Alerts are just log lines. No email, no SMS, no webhooks, no PagerDuty.
+  pipeline, no distributed tracing). Alerts are log lines plus an
+  optional webhook — no email, no SMS, no PagerDuty.
 - History is in-memory while the process runs, unless `history_file`
   is set (see Config) — then check history is loaded on startup and
   saved after every check round, so uptime survives restarts. A
@@ -58,6 +58,13 @@ python3 -m healthcheck.cli --config config.json --once
   across restarts (optional; default is in-memory only). The
   `--history-file` flag overrides it. The file is written atomically
   after every check round and on shutdown.
+- `webhook_url` — URL to POST a JSON alert to when an endpoint changes
+  state (optional; default is log lines only). The `--webhook-url`
+  flag overrides it. The payload is
+  `{"endpoint", "event" ("down" or "recovered"), "ok", "previous_ok",
+  "latency_ms", "status_code", "error", "checked_at"}`. The first
+  check of an endpoint sets its baseline and sends nothing; a failed
+  delivery is logged as a warning and never stops the monitor.
 - `http` endpoint — `url` required; ok on status 200–399.
 - `tcp` endpoint — `host` and `port` required; ok when the connect
   succeeds.
@@ -77,11 +84,16 @@ make test   # python3 -m unittest discover -s tests -v
 
 ## Roadmap
 
-- Configurable alert hooks (webhook URL) — log lines only for now.
+- [x] Configurable alert hooks (webhook URL) — done in 0.4.0.
 - HTTPS endpoints with custom CA / client certificates.
 
 ## Changelog
 
+- **0.4.0** — Configurable alert hooks: `webhook_url` in the config
+  (or `--webhook-url`) POSTs a JSON payload to the given URL when an
+  endpoint changes state (up -> down or down -> up). The first check
+  of an endpoint sets its baseline and sends nothing; a failed
+  delivery logs a warning and never stops the monitor.
 - **0.3.0** — Per-endpoint latency sparkline on the dashboard: an
   inline SVG of the last 20 recorded latencies per endpoint, scaled
   to that endpoint's own min/max (flat when history is flat, `-`
