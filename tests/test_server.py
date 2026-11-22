@@ -33,6 +33,25 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("100.0%", page)  # web: 1/1 up
         self.assertIn("0.0%", page)    # db: 0/1 up
 
+    def test_dashboard_shows_windowed_uptime_columns(self):
+        # Checks recorded just now: both in the 24h and 7d windows.
+        import time
+        now = time.time()
+        hist = History()
+        hist.record(_result("web", True, at=now - 60))
+        hist.record(_result("web", False, at=now - 30))
+        page = render_dashboard(hist, [{"name": "web", "type": "http", "url": "http://example.com"}])
+        self.assertIn("Uptime 24h", page)
+        self.assertIn("Uptime 7d", page)
+        self.assertIn("50.0%", page)  # 1/2 up in both windows and overall
+
+    def test_dashboard_windowed_uptime_dash_when_no_recent_checks(self):
+        # Checks are from 2023, long outside both windows: dashes.
+        page = render_dashboard(self.history, self.endpoints)
+        self.assertIn("Uptime 24h", page)
+        # web row: all-history 100.0% plus two "-" window cells
+        self.assertIn("<td>100.0%</td><td>-</td><td>-</td>", page)
+
     def test_html_escapes_endpoint_names(self):
         self.history.record(_result("<b>x</b>", True))
         page = render_dashboard(self.history, [{"name": "<b>x</b>", "type": "http", "url": "http://x"}])

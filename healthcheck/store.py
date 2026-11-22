@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections import deque
 
 
@@ -49,6 +50,25 @@ class History:
             return None
         up = sum(1 for c in checks if c["ok"])
         return round(100.0 * up / len(checks), 1)
+
+    def uptime_pct_window(self, name, seconds, now=None):
+        """Uptime % over checks in the last `seconds`, or None if none.
+
+        `now` defaults to time.time(); pass it in tests to pin the
+        window. Checks older than the window are ignored, so this
+        answers "how reliable was it in the last day / week" instead
+        of "over everything ever recorded". A window with no checks
+        is None, not 0 — no data is not downtime.
+        """
+        checks = self._checks.get(name)
+        if not checks:
+            return None
+        cutoff = (time.time() if now is None else now) - seconds
+        window = [c for c in checks if c["checked_at"] >= cutoff]
+        if not window:
+            return None
+        up = sum(1 for c in window if c["ok"])
+        return round(100.0 * up / len(window), 1)
 
     def save(self, path):
         tmp = path + ".tmp"

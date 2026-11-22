@@ -13,6 +13,8 @@ endpoint, and serves a small status dashboard over `http.server`.
 - HTTP checks (ok on 2xx/3xx, with status code and latency recorded).
 - TCP connect checks for services without HTTP.
 - Per-endpoint uptime % and recent check history.
+- Uptime % over the last 24 hours and the last 7 days, so a recent
+  outage shows up even when the all-time figure still looks fine.
 - A plain HTML dashboard: endpoint, status, uptime %, latency, last check.
 
 ## What it is not
@@ -79,7 +81,9 @@ python3 -m healthcheck.cli --config config.json --once
 ## Dashboard
 
 `GET /` renders a table with one row per endpoint: name, current status
-(UP / DOWN / UNKNOWN), uptime % over the recorded history, most recent
+(UP / DOWN / UNKNOWN), uptime % over the recorded history, uptime %
+over the last 24 hours and the last 7 days (a `-` when no checks fall
+in that window — no data is not downtime), most recent
 latency, a sparkline of the last 20 recorded latencies, and last check
 time. Any other path returns 404.
 
@@ -94,8 +98,11 @@ make test   # python3 -m unittest discover -s tests -v
 - [x] Configurable alert hooks (webhook URL) — done in 0.4.0.
 - [x] HTTPS endpoints with custom CA / client certificates — done
   in 0.5.0.
+- [x] Windowed uptime (24h / 7d) per endpoint — done in 0.6.0.
 
 ## Changelog
+
+- **0.6.0** — Windowed uptime on the dashboard: `History.uptime_pct_window(name, seconds)` reports the share of up checks in the last N seconds, and the dashboard shows Uptime 24h and Uptime 7d columns next to the all-time figure. A window with no recorded checks shows `-`, not 0%.
 
 - **0.5.0** — HTTPS endpoints with a custom CA bundle and client
   certificates: `cafile`, `cert`, and `key` per `http` endpoint.

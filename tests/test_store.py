@@ -21,6 +21,26 @@ class StoreTests(unittest.TestCase):
 
     def test_uptime_none_without_checks(self):
         self.assertIsNone(History().uptime_pct("api"))
+        self.assertIsNone(History().uptime_pct_window("api", 3600))
+
+    def test_uptime_window_ignores_old_checks(self):
+        # now = 100000; 24h window starts at 13600.
+        hist = History()
+        hist.record(_result("api", True, at=1000.0))    # too old
+        hist.record(_result("api", False, at=20000.0))  # in window
+        hist.record(_result("api", True, at=90000.0))   # in window
+        self.assertEqual(hist.uptime_pct("api"), 66.7)   # all 3
+        self.assertEqual(hist.uptime_pct_window("api", 24 * 3600, now=100000.0), 50.0)
+
+    def test_uptime_window_none_when_no_checks_in_window(self):
+        hist = History()
+        hist.record(_result("api", True, at=1000.0))
+        self.assertIsNone(hist.uptime_pct_window("api", 3600, now=100000.0))
+
+    def test_uptime_window_boundary_is_inclusive(self):
+        hist = History()
+        hist.record(_result("api", True, at=1000.0))
+        self.assertEqual(hist.uptime_pct_window("api", 1000, now=2000.0), 100.0)
 
     def test_uptime_all_up_and_all_down(self):
         hist = History()

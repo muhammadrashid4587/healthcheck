@@ -43,6 +43,8 @@ def render_dashboard(history, endpoints):
         name = ep["name"]
         cur = history.current(name)
         uptime = history.uptime_pct(name)
+        up_24h = history.uptime_pct_window(name, 24 * 3600)
+        up_7d = history.uptime_pct_window(name, 7 * 24 * 3600)
         if cur is None:
             status, latency, last = "UNKNOWN", "-", "-"
         else:
@@ -50,19 +52,21 @@ def render_dashboard(history, endpoints):
             latency = f"{cur['latency_ms']:.1f} ms"
             last = time.strftime("%H:%M:%S", time.localtime(cur["checked_at"]))
         up = f"{uptime:.1f}%" if uptime is not None else "-"
+        day = f"{up_24h:.1f}%" if up_24h is not None else "-"
+        week = f"{up_7d:.1f}%" if up_7d is not None else "-"
         cls = "up" if status == "UP" else "down" if status == "DOWN" else ""
         rows.append(
             f"<tr><td>{html.escape(name)}</td>"
             f"<td class=\"{cls}\">{status}</td>"
-            f"<td>{up}</td><td>{latency}</td>"
+            f"<td>{up}</td><td>{day}</td><td>{week}</td><td>{latency}</td>"
             f"<td>{latency_sparkline(history, name)}</td><td>{last}</td></tr>"
         )
-    body = "\n".join(rows) or "<tr><td colspan=\"6\">No endpoints configured.</td></tr>"
+    body = "\n".join(rows) or "<tr><td colspan=\"8\">No endpoints configured.</td></tr>"
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>healthcheck</title>
 <style>body{{font-family:sans-serif;max-width:720px;margin:2em auto}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccc;padding:6px 10px;text-align:left}}.up{{color:green;font-weight:bold}}.down{{color:red;font-weight:bold}}</style>
 </head><body><h1>healthcheck</h1>
-<table><tr><th>Endpoint</th><th>Status</th><th>Uptime</th><th>Latency</th><th>Latency history</th><th>Last check</th></tr>
+<table><tr><th>Endpoint</th><th>Status</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Latency</th><th>Latency history</th><th>Last check</th></tr>
 {body}</table><p>Rendered {time.strftime('%Y-%m-%d %H:%M:%S')} — reload to update.</p></body></html>"""
 
 
