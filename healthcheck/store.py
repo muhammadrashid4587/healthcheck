@@ -34,6 +34,7 @@ class History:
             "checked_at": result.checked_at,
             "skipped": result.skipped,
             "depends_on": result.depends_on,
+            "unconfirmed": result.unconfirmed,
         }
         self._checks.setdefault(result.name, deque(maxlen=self.maxlen)).append(entry)
         return entry
@@ -55,12 +56,18 @@ class History:
 
         Skipped checks are excluded from both sides: a check that
         never ran is neither up nor down. A history of only skips is
-        None, not 0 — no data is not downtime.
+        None, not 0 — no data is not downtime. Unconfirmed failures
+        are excluded the same way: a single blip below the flap
+        threshold is not confirmed downtime, so it counts neither
+        for nor against uptime. (Entries written before flap
+        detection carry no "unconfirmed" key and count as before.)
         """
         checks = self._checks.get(name)
         if not checks:
             return None
-        counted = [c for c in checks if not c.get("skipped", False)]
+        counted = [c for c in checks
+                   if not c.get("skipped", False)
+                   and not c.get("unconfirmed", False)]
         if not counted:
             return None
         up = sum(1 for c in counted if c["ok"])
@@ -73,14 +80,18 @@ class History:
         window. Checks older than the window are ignored, so this
         answers "how reliable was it in the last day / week" instead
         of "over everything ever recorded". A window with no checks
-        is None, not 0 — no data is not downtime.
+        is None, not 0 — no data is not downtime. Unconfirmed
+        failures (below the flap threshold) are excluded, like
+        skipped checks: not confirmed downtime.
         """
         checks = self._checks.get(name)
         if not checks:
             return None
         cutoff = (time.time() if now is None else now) - seconds
         window = [c for c in checks
-                  if c["checked_at"] >= cutoff and not c.get("skipped", False)]
+                  if c["checked_at"] >= cutoff
+                  and not c.get("skipped", False)
+                  and not c.get("unconfirmed", False)]
         if not window:
             return None
         up = sum(1 for c in window if c["ok"])

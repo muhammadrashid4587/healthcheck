@@ -17,6 +17,7 @@ import time
 
 from .alerts import WebhookAlerter
 from .checker import check_endpoint, skipped_result
+from .flap import DEFAULT_THRESHOLD, FlapDetector, validate_threshold
 from .server import serve
 from .store import History
 
@@ -37,6 +38,8 @@ def load_config(path):
         if ep["type"] == "tcp" and ("host" not in ep or "port" not in ep):
             raise ValueError(f"tcp endpoint missing host/port: {ep!r}")
     validate_dependencies(endpoints)
+    if "flap_threshold" in cfg:
+        validate_threshold(cfg["flap_threshold"])
     return cfg
 
 
@@ -149,26 +152,48 @@ def make_alerter(cfg, args):
     return WebhookAlerter(url) if url else None
 
 
+def flap_threshold(cfg, args):
+    """Consecutive failures that confirm an outage, or the default.
+
+    The --flap-threshold flag wins over the config file's
+    "flap_threshold" key; either may be absent, in which case the
+    default (3) applies. A bad value raises ValueError — the monitor
+    refuses to start rather than alert on the wrong threshold.
+    """
+    if getattr(args, "flap_threshold", None) is not None:
+        return validate_threshold(args.flap_threshold)
+    if "flap_threshold" in cfg:
+        return validate_threshold(cfg["flap_threshold"])
+    return DEFAULT_THRESHOLD
+
+
 def _dependency_state(name, results, history):
     """State of dependency `name`: "up", "down", "skipped", or "unknown".
 
     This round's result wins; otherwise the last recorded check is
     used, so a dependency that has never been checked is UNKNOWN.
+    A failure below the flap threshold is not a confirmed outage, so
+    the dependency still counts as UP and its dependents are checked.
     """
     result = results.get(name)
     if result is not None:
         if result.skipped:
             return "skipped"
-        return "up" if result.ok else "down"
+        if result.ok or result.unconfirmed:
+            return "up"
+        return "down"
     entry = history.current(name)
     if entry is None:
         return "unknown"
     if entry.get("skipped", False):
         return "skipped"
-    return "up" if entry["ok"] else "down"
+    if entry["ok"] or entry.get("unconfirmed", False):
+        return "up"
+    return "down"
 
 
-def check_all(endpoints, history, timeout=5.0, alerter=None):
+def check_all(endpoints, history, timeout=5.0, alerter=None,
+              flap_detector=None):
     """One check round over all endpoints, dependencies first.
 
     An endpoint whose `depends_on` is not UP is skipped, not checked:
@@ -177,7 +202,19 @@ def check_all(endpoints, history, timeout=5.0, alerter=None):
     fire alerts — a dependent cannot be "down" when its dependency is
     what failed. A skipped dependency propagates: if A is down, B
     (depends on A) is skipped, and C (depends on B) is skipped too.
+
+    Flap detection: a failed check is only a confirmed outage after
+    `flap_detector`'s threshold of consecutive failures. Below the
+    threshold the failure is recorded as unconfirmed — logged, but no
+    alert, no uptime penalty, and the endpoint stays UP on the
+    dashboard. A success resets the counter; a success after a
+    confirmed outage is a recovery. Callers running repeated rounds
+    must pass one shared detector; a fresh default (threshold 3) is
+    created when none is given, which is only correct for a single
+    round such as --once.
     """
+    if flap_detector is None:
+        flap_detector = FlapDetector()
     results = {}
     for ep in check_order(endpoints):
         name = ep["name"]
@@ -194,15 +231,33 @@ def check_all(endpoints, history, timeout=5.0, alerter=None):
         result = check_endpoint(ep, timeout=timeout)
         if dep is not None:
             result = dataclasses.replace(result, depends_on=dep)
+        outcome = flap_detector.observe(name, result.ok)
+        if not result.ok and not outcome.confirmed_down:
+            result = dataclasses.replace(result, unconfirmed=True)
         history.record(result)
         results[name] = result
         if alerter is not None:
-            alerter.notify(result)
-        detail = (f"HTTP {result.status_code}" if result.status_code
-                  else (result.error or ""))
-        log.info("%s %s %.1f ms %s", result.name,
-                 "UP" if result.ok else "DOWN",
-                 result.latency_ms, detail)
+            # Feed the alerter the *confirmed* state: an unconfirmed
+            # failure looks like "still up" to it, so nothing fires
+            # until the threshold is reached. The Nth consecutive
+            # failure and the success that recovers from it are real
+            # transitions and alert exactly as before.
+            effective = result if (result.ok or outcome.confirmed_down) \
+                else dataclasses.replace(result, ok=True)
+            alerter.notify(effective)
+        if result.ok:
+            log.info("%s UP %.1f ms", result.name, result.latency_ms)
+        elif outcome.confirmed_down:
+            detail = (f"HTTP {result.status_code}" if result.status_code
+                      else (result.error or ""))
+            log.info("%s DOWN %.1f ms %s", result.name,
+                     result.latency_ms, detail)
+        else:
+            detail = (f"HTTP {result.status_code}" if result.status_code
+                      else (result.error or ""))
+            log.info("%s DOWN (unconfirmed %d/%d) %.1f ms %s", result.name,
+                     outcome.consecutive_failures,
+                     flap_detector.threshold, result.latency_ms, detail)
     return results
 
 
@@ -212,6 +267,9 @@ def run_forever(cfg, host, port, args=None):
     path = history_path(cfg, args) if args is not None else cfg.get("history_file")
     history = load_history(path, maxlen=cfg.get("history", 100))
     alerter = make_alerter(cfg, args)
+    # One detector for the life of the process: the consecutive
+    # failure count must survive across rounds.
+    detector = FlapDetector(flap_threshold(cfg, args))
     if path and history.names():
         log.info("loaded history for %d endpoint(s) from %s",
                  len(history.names()), path)
@@ -219,7 +277,8 @@ def run_forever(cfg, host, port, args=None):
 
     def loop():
         while not stop.is_set():
-            check_all(endpoints, history, alerter=alerter)
+            check_all(endpoints, history, alerter=alerter,
+                      flap_detector=detector)
             save_history(history, path)
             stop.wait(interval)
 
@@ -252,13 +311,18 @@ def main(argv=None):
                         help="POST a JSON alert to this URL when an "
                              "endpoint changes state (overrides the "
                              "config file's webhook_url)")
+    parser.add_argument("--flap-threshold", type=int, default=None,
+                        help="alert only after this many consecutive "
+                             "failed checks (overrides the config "
+                             "file's flap_threshold, default 3)")
     args = parser.parse_args(argv)
     cfg = load_config(args.config)
     if args.once:
         path = history_path(cfg, args)
         history = load_history(path, maxlen=cfg.get("history", 100))
         check_all(cfg.get("endpoints", []), history,
-                  alerter=make_alerter(cfg, args))
+                  alerter=make_alerter(cfg, args),
+                  flap_detector=FlapDetector(flap_threshold(cfg, args)))
         save_history(history, path)
         return 0
     run_forever(cfg, args.host, args.port, args)

@@ -9,6 +9,7 @@ import healthcheck.alerts as alerts
 from healthcheck.alerts import WebhookAlerter, alert_payload, post_alert
 from healthcheck.checker import CheckResult
 from healthcheck.cli import check_all, webhook_url
+from healthcheck.flap import FlapDetector
 from healthcheck.store import History
 
 
@@ -178,7 +179,10 @@ class WebhookUrlTests(unittest.TestCase):
 class CheckAllAlerterTests(unittest.TestCase):
     def test_check_all_calls_alerter_with_each_result(self):
         # A TCP check against a closed localhost port: deterministic
-        # DOWN result, no network access needed.
+        # DOWN result, no network access needed. Threshold 1, so the
+        # single failure is a confirmed outage and the alerter sees
+        # the raw result; with the default threshold 3 it would see
+        # the failure as still-up (unconfirmed).
         seen = []
 
         class Spy:
@@ -188,7 +192,8 @@ class CheckAllAlerterTests(unittest.TestCase):
 
         endpoints = [{"name": "closed", "type": "tcp",
                       "host": "127.0.0.1", "port": 1, "timeout": 1}]
-        check_all(endpoints, History(), alerter=Spy())
+        check_all(endpoints, History(), alerter=Spy(),
+                  flap_detector=FlapDetector(threshold=1))
         self.assertEqual(len(seen), 1)
         self.assertEqual(seen[0].name, "closed")
         self.assertFalse(seen[0].ok)

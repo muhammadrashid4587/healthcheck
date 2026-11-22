@@ -13,6 +13,9 @@ endpoint, and serves a small status dashboard over `http.server`.
 - HTTP checks (ok on 2xx/3xx, with status code and latency recorded).
 - TCP connect checks for services without HTTP.
 - Per-endpoint uptime % and recent check history.
+- Flap detection: an endpoint only flips to DOWN (and only alerts)
+  after 3 consecutive failed checks by default — a single blip is
+  logged, not paged. The threshold is configurable per config.
 - Uptime % over the last 24 hours and the last 7 days, so a recent
   outage shows up even when the all-time figure still looks fine.
 - A plain HTML dashboard: endpoint, status, uptime %, latency, last check.
@@ -57,6 +60,12 @@ python3 -m healthcheck.cli --config config.json --once
 ```
 
 - `interval_seconds` — seconds between check rounds (default 30).
+- `flap_threshold` — consecutive failed checks that confirm an
+  outage (default 3). A failure below the threshold is recorded but
+  unconfirmed: no alert, no uptime penalty, and the endpoint stays
+  UP on the dashboard. A success at any point resets the count; a
+  success after a confirmed outage is a recovery. Must be a
+  positive integer. The `--flap-threshold` flag overrides it.
 - `history` — checks kept per endpoint (default 100).
 - `history_file` — path to a JSON file for persisting check history
   across restarts (optional; default is in-memory only). The
@@ -68,7 +77,9 @@ python3 -m healthcheck.cli --config config.json --once
   `{"endpoint", "event" ("down" or "recovered"), "ok", "previous_ok",
   "latency_ms", "status_code", "error", "checked_at"}`. The first
   check of an endpoint sets its baseline and sends nothing; a failed
-  delivery is logged as a warning and never stops the monitor.
+  delivery is logged as a warning and never stops the monitor. With
+  flap detection, the alert fires only when the outage is confirmed
+  (see `flap_threshold` above), not on a single failed check.
 - `http` endpoint — `url` required; ok on status 200–399.
   `cafile`, `cert`, and `key` are optional: `cafile` is a PEM bundle
   of certificate authorities to trust for an `https://` endpoint
@@ -101,7 +112,10 @@ in that window — no data is not downtime), most recent
 latency, a sparkline of the last 20 recorded latencies, and last check
 time. Skipped checks are recorded in history with the dependency that
 caused the skip, but they never count in uptime and never appear in
-the sparkline. Any other path returns 404.
+the sparkline. A failure below the flap threshold likewise never
+counts in uptime, and the endpoint still shows UP — it only flips to
+DOWN once the threshold of consecutive failures is reached. Any other
+path returns 404.
 
 ## Tests
 
@@ -117,12 +131,22 @@ make test   # python3 -m unittest discover -s tests -v
 - [x] Windowed uptime (24h / 7d) per endpoint — done in 0.6.0.
 - [x] Dependent checks (skip when the dependency is not UP) — done
   in 0.7.0.
-- [ ] Flap detection: only alert after N consecutive failures, so a
-  single blip does not page anyone.
+- [x] Flap detection: only alert after N consecutive failures, so a
+  single blip does not page anyone — done in 0.8.0.
 
 ## Changelog
 
-- **0.7.0** — Dependent checks: an endpoint can declare
+- **0.8.0** — Flap detection: an endpoint only counts as DOWN (and
+  only alerts) after `flap_threshold` consecutive failed checks
+  (default 3, configurable in the config or with
+  `--flap-threshold`). Failures below the threshold are recorded as
+  unconfirmed — logged, but no alert, no uptime penalty, and the
+  endpoint stays UP on the dashboard. A success resets the counter;
+  a success after a confirmed outage sends the recovery alert.
+  Unconfirmed failures also do not skip dependents: a dependency is
+  only "down" for its dependents once its outage is confirmed.
+  Non-integer or non-positive thresholds are rejected at config
+  load.
   `depends_on` naming another endpoint, and when the dependency is
   DOWN, SKIPPED, or never checked, the dependent is recorded as
   SKIPPED instead of being checked — not DOWN, not counted against

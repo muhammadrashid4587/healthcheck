@@ -24,6 +24,10 @@ class CheckResult:
     checked_at: float = 0.0
     skipped: bool = False
     depends_on: str | None = None
+    # A failed check below the flap threshold: the failure really
+    # happened, but the endpoint is not confirmed down yet — no alert,
+    # no uptime penalty, no DOWN on the dashboard.
+    unconfirmed: bool = False
 
 
 def skipped_result(name, depends_on, reason):

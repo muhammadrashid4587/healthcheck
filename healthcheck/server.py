@@ -57,7 +57,10 @@ def render_dashboard(history, endpoints):
             latency = "-"
             last = time.strftime("%H:%M:%S", time.localtime(cur["checked_at"]))
         else:
-            status = "UP" if cur["ok"] else "DOWN"
+            # A failure below the flap threshold has not confirmed
+            # the endpoint down yet: it still shows UP.
+            status = "UP" if (cur["ok"] or cur.get("unconfirmed", False)) \
+                else "DOWN"
             latency = f"{cur['latency_ms']:.1f} ms"
             last = time.strftime("%H:%M:%S", time.localtime(cur["checked_at"]))
         up = f"{uptime:.1f}%" if uptime is not None else "-"

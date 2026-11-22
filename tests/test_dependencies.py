@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from healthcheck.checker import CheckResult, skipped_result
 from healthcheck.cli import check_all, load_config
+from healthcheck.flap import FlapDetector
 from healthcheck.server import render_dashboard
 from healthcheck.store import History
 
@@ -59,7 +60,11 @@ def _write_config(directory, endpoints):
 class SkipTests(unittest.TestCase):
     def test_dependent_skipped_while_dependency_down(self):
         # Dependent listed FIRST in the config: the round must still
-        # check the dependency first, then skip the dependent.
+        # check the dependency first, then skip the dependent. The
+        # dependency only counts as down after the flap threshold
+        # (3 consecutive failures), so three rounds run here with one
+        # shared detector; in the first two the dependent is still
+        # checked, because a single blip is not an outage.
         db_port = _free_port()
         api_port = _free_port()
         endpoints = [
@@ -70,16 +75,23 @@ class SkipTests(unittest.TestCase):
         ]
         history = History()
         alerter = _RecordingAlerter()
-        check_all(endpoints, history, alerter=alerter)
+        detector = FlapDetector()
+        for _ in range(3):
+            check_all(endpoints, history, alerter=alerter,
+                      flap_detector=detector)
         db_entry = history.current("db")
         api_entry = history.current("api")
         self.assertFalse(db_entry["ok"])            # dependency is DOWN
+        self.assertFalse(db_entry["unconfirmed"])   # confirmed, not a blip
         self.assertTrue(api_entry["skipped"])       # dependent is SKIPPED
         self.assertEqual(api_entry["depends_on"], "db")
         self.assertIn("db", api_entry["error"])
         self.assertIn("DOWN", api_entry["error"])
-        # A skip is not a state change: no alert for the dependent.
-        self.assertEqual(alerter.notified, ["db"])
+        # A skip is not a state change: the dependent is only
+        # reported while it is really checked (rounds 1-2), never
+        # for the round it was skipped.
+        self.assertEqual(alerter.notified,
+                         ["db", "api", "db", "api", "db"])
         # A history of only skips is no data, not 0% uptime.
         self.assertIsNone(history.uptime_pct("api"))
 
@@ -92,14 +104,17 @@ class SkipTests(unittest.TestCase):
              "port": port, "depends_on": "db"},
         ]
         history = History()
-        # Round 1: nothing listening — db DOWN, api SKIPPED.
-        check_all(endpoints, history)
+        detector = FlapDetector()
+        # Three rounds: nothing listening — db confirmed DOWN on the
+        # third, api SKIPPED from then on.
+        for _ in range(3):
+            check_all(endpoints, history, flap_detector=detector)
         self.assertTrue(history.current("api")["skipped"])
-        # Round 2: the dependency is up now — api is really checked.
+        # Next round: the dependency is up now — api is really checked.
         server = HTTPServer(("127.0.0.1", port), _OkHandler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
-            check_all(endpoints, history)
+            check_all(endpoints, history, flap_detector=detector)
         finally:
             server.shutdown()
             server.server_close()
@@ -121,7 +136,11 @@ class SkipTests(unittest.TestCase):
              "port": api_port, "depends_on": "mid"},
         ]
         history = History()
-        check_all(endpoints, history)
+        detector = FlapDetector()
+        # Three rounds so db is confirmed down; only then does the
+        # skip propagate down the chain.
+        for _ in range(3):
+            check_all(endpoints, history, flap_detector=detector)
         self.assertFalse(history.current("db")["ok"])
         self.assertTrue(history.current("mid")["skipped"])
         self.assertTrue(history.current("api")["skipped"])
