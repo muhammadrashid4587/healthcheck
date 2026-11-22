@@ -6,7 +6,7 @@ dashboard. Alerts are log lines, plus an optional webhook that fires
 when an endpoint changes state.
 """
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 from .checker import CheckResult, check_endpoint, check_http, check_tcp
 from .store import History

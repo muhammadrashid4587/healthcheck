@@ -1,1 +1,1 @@
-{"endpoints":[{"name":"example","timeout":5,"type":"http","url":"https://example.com"},{"host":"127.0.0.1","name":"localhost-ssh","port":22,"timeout":5,"type":"tcp"}],"history":100,"history_file":"history.json","interval_seconds":30}
+{"endpoints":[{"name":"example","timeout":5,"type":"http","url":"https://example.com"},{"host":"127.0.0.1","name":"localhost-ssh","port":22,"timeout":5,"type":"tcp"},{"depends_on":"example","name":"example-api","timeout":5,"type":"http","url":"https://example.com/api"}],"history":100,"history_file":"history.json","interval_seconds":30}

@@ -16,6 +16,8 @@ endpoint, and serves a small status dashboard over `http.server`.
 - Uptime % over the last 24 hours and the last 7 days, so a recent
   outage shows up even when the all-time figure still looks fine.
 - A plain HTML dashboard: endpoint, status, uptime %, latency, last check.
+  An endpoint whose dependency is not up shows SKIPPED, with the
+  dependency named — a skip is not downtime.
 
 ## What it is not
 
@@ -77,15 +79,29 @@ python3 -m healthcheck.cli --config config.json --once
   TLS options are ignored for plain `http://` URLs.
 - `tcp` endpoint — `host` and `port` required; ok when the connect
   succeeds.
+- `depends_on` — the name of another endpoint in the same config
+  (optional, either type). When the dependency is DOWN, SKIPPED, or
+  has never been checked, the dependent is not checked at all: it is
+  recorded as SKIPPED, shown as SKIPPED on the dashboard, excluded
+  from uptime math, and fires no alert — a dependent cannot be "down"
+  when its dependency is what failed. When the dependency recovers,
+  the dependent is checked again on the next round. Skips propagate
+  down a chain (A down → B skipped → C skipped). A `depends_on`
+  naming an unknown endpoint, or any dependency cycle (including a
+  self-dependency), is rejected at config load with a clear error —
+  the monitor refuses to start rather than check a broken chain.
 
 ## Dashboard
 
 `GET /` renders a table with one row per endpoint: name, current status
-(UP / DOWN / UNKNOWN), uptime % over the recorded history, uptime %
+(UP / DOWN / SKIPPED / UNKNOWN), the endpoint it depends on (or `-`),
+uptime % over the recorded history, uptime %
 over the last 24 hours and the last 7 days (a `-` when no checks fall
 in that window — no data is not downtime), most recent
 latency, a sparkline of the last 20 recorded latencies, and last check
-time. Any other path returns 404.
+time. Skipped checks are recorded in history with the dependency that
+caused the skip, but they never count in uptime and never appear in
+the sparkline. Any other path returns 404.
 
 ## Tests
 
@@ -99,8 +115,22 @@ make test   # python3 -m unittest discover -s tests -v
 - [x] HTTPS endpoints with custom CA / client certificates — done
   in 0.5.0.
 - [x] Windowed uptime (24h / 7d) per endpoint — done in 0.6.0.
+- [x] Dependent checks (skip when the dependency is not UP) — done
+  in 0.7.0.
+- [ ] Flap detection: only alert after N consecutive failures, so a
+  single blip does not page anyone.
 
 ## Changelog
+
+- **0.7.0** — Dependent checks: an endpoint can declare
+  `depends_on` naming another endpoint, and when the dependency is
+  DOWN, SKIPPED, or never checked, the dependent is recorded as
+  SKIPPED instead of being checked — not DOWN, not counted against
+  uptime, no alert. Skips propagate down a chain and the dependent
+  resumes on the next round after the dependency recovers. Unknown
+  dependency names and dependency cycles are rejected at config
+  load. The dashboard shows a SKIPPED status and a Depends on
+  column; history entries carry the skip and the dependency name.
 
 - **0.6.0** — Windowed uptime on the dashboard: `History.uptime_pct_window(name, seconds)` reports the share of up checks in the last N seconds, and the dashboard shows Uptime 24h and Uptime 7d columns next to the all-time figure. A window with no recorded checks shows `-`, not 0%.
 

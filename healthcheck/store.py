@@ -20,13 +20,20 @@ class History:
         self._checks = {}  # name -> deque[dict]
 
     def record(self, result):
-        """Append one CheckResult; returns the stored entry."""
+        """Append one CheckResult; returns the stored entry.
+
+        Skipped checks are recorded too (so the dashboard and history
+        show *why* an endpoint was not checked), with their declared
+        dependency, but they never count in uptime math.
+        """
         entry = {
             "ok": result.ok,
             "latency_ms": round(result.latency_ms, 1),
             "status_code": result.status_code,
             "error": result.error,
             "checked_at": result.checked_at,
+            "skipped": result.skipped,
+            "depends_on": result.depends_on,
         }
         self._checks.setdefault(result.name, deque(maxlen=self.maxlen)).append(entry)
         return entry
@@ -44,12 +51,20 @@ class History:
         return checks[-1] if checks else None
 
     def uptime_pct(self, name):
-        """Share of recorded checks that were up, or None if no checks."""
+        """Share of recorded checks that were up, or None if no checks.
+
+        Skipped checks are excluded from both sides: a check that
+        never ran is neither up nor down. A history of only skips is
+        None, not 0 — no data is not downtime.
+        """
         checks = self._checks.get(name)
         if not checks:
             return None
-        up = sum(1 for c in checks if c["ok"])
-        return round(100.0 * up / len(checks), 1)
+        counted = [c for c in checks if not c.get("skipped", False)]
+        if not counted:
+            return None
+        up = sum(1 for c in counted if c["ok"])
+        return round(100.0 * up / len(counted), 1)
 
     def uptime_pct_window(self, name, seconds, now=None):
         """Uptime % over checks in the last `seconds`, or None if none.
@@ -64,7 +79,8 @@ class History:
         if not checks:
             return None
         cutoff = (time.time() if now is None else now) - seconds
-        window = [c for c in checks if c["checked_at"] >= cutoff]
+        window = [c for c in checks
+                  if c["checked_at"] >= cutoff and not c.get("skipped", False)]
         if not window:
             return None
         up = sum(1 for c in window if c["ok"])

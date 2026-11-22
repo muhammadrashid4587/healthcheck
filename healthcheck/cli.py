@@ -9,13 +9,14 @@ Run it under whatever supervisor you already use and watch the logs.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import logging
 import threading
 import time
 
 from .alerts import WebhookAlerter
-from .checker import check_endpoint
+from .checker import check_endpoint, skipped_result
 from .server import serve
 from .store import History
 
@@ -35,7 +36,60 @@ def load_config(path):
             raise ValueError(f"http endpoint missing url: {ep!r}")
         if ep["type"] == "tcp" and ("host" not in ep or "port" not in ep):
             raise ValueError(f"tcp endpoint missing host/port: {ep!r}")
+    validate_dependencies(endpoints)
     return cfg
+
+
+def validate_dependencies(endpoints):
+    """Reject bad `depends_on` entries at config load.
+
+    Every dependency must name another endpoint in the same config,
+    and the dependency graph must be acyclic — a cycle would leave
+    every endpoint in it waiting on another forever. Raises
+    ValueError with a clear message; the monitor refuses to start
+    rather than silently checking a broken dependency chain.
+    """
+    names = {ep["name"] for ep in endpoints}
+    for ep in endpoints:
+        dep = ep.get("depends_on")
+        if dep is None:
+            continue
+        if not isinstance(dep, str):
+            raise ValueError(
+                f"endpoint {ep['name']!r}: depends_on must be a name, "
+                f"not {dep!r}")
+        if dep == ep["name"]:
+            raise ValueError(
+                f"endpoint {ep['name']!r} depends on itself")
+        if dep not in names:
+            raise ValueError(
+                f"endpoint {ep['name']!r} depends on unknown endpoint "
+                f"{dep!r}")
+    check_order(endpoints)  # raises ValueError on a cycle
+
+
+def check_order(endpoints):
+    """Endpoints ordered so each dependency is checked before its
+    dependents (Kahn's algorithm, config order kept among ready
+    endpoints). Raises ValueError naming the cycle if one exists.
+    """
+    by_name = {ep["name"]: ep for ep in endpoints}
+    remaining = {ep["name"]: ep.get("depends_on") for ep in endpoints}
+    ordered, ready = [], [ep["name"] for ep in endpoints
+                          if not ep.get("depends_on")]
+    while ready:
+        name = ready.pop(0)
+        ordered.append(by_name[name])
+        for other, dep in list(remaining.items()):
+            if dep == name:
+                remaining[other] = None
+                ready.append(other)
+        remaining.pop(name, None)
+    if remaining:
+        cycle = " -> ".join(sorted(remaining))
+        raise ValueError(
+            f"dependency cycle involving: {cycle}")
+    return ordered
 
 
 def history_path(cfg, args):
@@ -95,10 +149,53 @@ def make_alerter(cfg, args):
     return WebhookAlerter(url) if url else None
 
 
+def _dependency_state(name, results, history):
+    """State of dependency `name`: "up", "down", "skipped", or "unknown".
+
+    This round's result wins; otherwise the last recorded check is
+    used, so a dependency that has never been checked is UNKNOWN.
+    """
+    result = results.get(name)
+    if result is not None:
+        if result.skipped:
+            return "skipped"
+        return "up" if result.ok else "down"
+    entry = history.current(name)
+    if entry is None:
+        return "unknown"
+    if entry.get("skipped", False):
+        return "skipped"
+    return "up" if entry["ok"] else "down"
+
+
 def check_all(endpoints, history, timeout=5.0, alerter=None):
-    for ep in endpoints:
+    """One check round over all endpoints, dependencies first.
+
+    An endpoint whose `depends_on` is not UP is skipped, not checked:
+    the skip is recorded in history (so the dashboard shows SKIPPED
+    and the reason), but it does not count against uptime and does not
+    fire alerts — a dependent cannot be "down" when its dependency is
+    what failed. A skipped dependency propagates: if A is down, B
+    (depends on A) is skipped, and C (depends on B) is skipped too.
+    """
+    results = {}
+    for ep in check_order(endpoints):
+        name = ep["name"]
+        dep = ep.get("depends_on")
+        if dep is not None:
+            state = _dependency_state(dep, results, history)
+            if state != "up":
+                result = skipped_result(
+                    name, dep, f"dependency {dep!r} is {state.upper()}")
+                history.record(result)
+                results[name] = result
+                log.info("%s SKIPPED (%s)", name, result.error)
+                continue
         result = check_endpoint(ep, timeout=timeout)
+        if dep is not None:
+            result = dataclasses.replace(result, depends_on=dep)
         history.record(result)
+        results[name] = result
         if alerter is not None:
             alerter.notify(result)
         detail = (f"HTTP {result.status_code}" if result.status_code
@@ -106,6 +203,7 @@ def check_all(endpoints, history, timeout=5.0, alerter=None):
         log.info("%s %s %.1f ms %s", result.name,
                  "UP" if result.ok else "DOWN",
                  result.latency_ms, detail)
+    return results
 
 
 def run_forever(cfg, host, port, args=None):

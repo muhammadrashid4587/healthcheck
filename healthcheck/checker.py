@@ -22,6 +22,22 @@ class CheckResult:
     status_code: int | None = None
     error: str | None = None
     checked_at: float = 0.0
+    skipped: bool = False
+    depends_on: str | None = None
+
+
+def skipped_result(name, depends_on, reason):
+    """A check that never ran because its dependency was not UP.
+
+    `ok` is False (nothing confirmed up) but `skipped` marks it as
+    neither up nor down: it must not count against uptime and must
+    not fire alerts. `reason` names the dependency's state, e.g.
+    "dependency 'db' is DOWN".
+    """
+    return CheckResult(
+        name=name, ok=False, latency_ms=0.0,
+        error=f"skipped: {reason}", checked_at=time.time(),
+        skipped=True, depends_on=depends_on)
 
 
 def build_tls_context(cafile=None, cert=None, key=None):
