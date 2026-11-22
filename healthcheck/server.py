@@ -1,7 +1,8 @@
 """Status dashboard over stdlib http.server.
 
 GET / renders a plain HTML table: each endpoint, its current status,
-uptime %, most recent latency, and last check time. Anything else 404s.
+uptime %, most recent latency, a sparkline of recent latencies, and
+last check time. Anything else 404s.
 """
 
 from __future__ import annotations
@@ -9,6 +10,31 @@ from __future__ import annotations
 import html
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+def latency_sparkline(history, name, width=100, height=24):
+    """Inline SVG sparkline of recent latencies, or "-" with too little data.
+
+    Uses the last 20 recorded latencies (oldest first), scaled so the
+    lowest maps near the bottom and the highest near the top. A flat
+    history renders as a flat line; a single point is not a line.
+    """
+    points = [c["latency_ms"] for c in history.recent(name, 20)]
+    if len(points) < 2:
+        return "-"
+    lo, hi = min(points), max(points)
+    span = (hi - lo) or 1.0
+    coords = []
+    for i, value in enumerate(points):
+        x = i * width / (len(points) - 1)
+        y = height - 2 - (value - lo) / span * (height - 4)
+        coords.append(f"{x:.1f},{y:.1f}")
+    return (
+        f'<svg width="{width}" height="{height}" viewBox="0 0 {width} {height}"'
+        f' role="img" aria-label="latency history">'
+        f'<polyline points="{" ".join(coords)}" fill="none"'
+        f' stroke="#3366cc" stroke-width="1.5"/></svg>'
+    )
 
 
 def render_dashboard(history, endpoints):
@@ -28,14 +54,15 @@ def render_dashboard(history, endpoints):
         rows.append(
             f"<tr><td>{html.escape(name)}</td>"
             f"<td class=\"{cls}\">{status}</td>"
-            f"<td>{up}</td><td>{latency}</td><td>{last}</td></tr>"
+            f"<td>{up}</td><td>{latency}</td>"
+            f"<td>{latency_sparkline(history, name)}</td><td>{last}</td></tr>"
         )
-    body = "\n".join(rows) or "<tr><td colspan=\"5\">No endpoints configured.</td></tr>"
+    body = "\n".join(rows) or "<tr><td colspan=\"6\">No endpoints configured.</td></tr>"
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>healthcheck</title>
 <style>body{{font-family:sans-serif;max-width:720px;margin:2em auto}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccc;padding:6px 10px;text-align:left}}.up{{color:green;font-weight:bold}}.down{{color:red;font-weight:bold}}</style>
 </head><body><h1>healthcheck</h1>
-<table><tr><th>Endpoint</th><th>Status</th><th>Uptime</th><th>Latency</th><th>Last check</th></tr>
+<table><tr><th>Endpoint</th><th>Status</th><th>Uptime</th><th>Latency</th><th>Latency history</th><th>Last check</th></tr>
 {body}</table><p>Rendered {time.strftime('%Y-%m-%d %H:%M:%S')} — reload to update.</p></body></html>"""
 
 

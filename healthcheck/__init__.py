@@ -5,7 +5,7 @@ schedule, tracks uptime per endpoint, and serves a small status
 dashboard. Alerts are just log lines.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from .checker import CheckResult, check_endpoint, check_http, check_tcp
 from .store import History

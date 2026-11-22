@@ -66,7 +66,8 @@ python3 -m healthcheck.cli --config config.json --once
 
 `GET /` renders a table with one row per endpoint: name, current status
 (UP / DOWN / UNKNOWN), uptime % over the recorded history, most recent
-latency, and last check time. Any other path returns 404.
+latency, a sparkline of the last 20 recorded latencies, and last check
+time. Any other path returns 404.
 
 ## Tests
 
@@ -77,11 +78,14 @@ make test   # python3 -m unittest discover -s tests -v
 ## Roadmap
 
 - Configurable alert hooks (webhook URL) — log lines only for now.
-- Per-endpoint latency history sparkline on the dashboard.
 - HTTPS endpoints with custom CA / client certificates.
 
 ## Changelog
 
+- **0.3.0** — Per-endpoint latency sparkline on the dashboard: an
+  inline SVG of the last 20 recorded latencies per endpoint, scaled
+  to that endpoint's own min/max (flat when history is flat, `-`
+  with fewer than two points).
 - **0.2.0** — Persist history to disk across restarts: `history_file`
   in the config (or `--history-file`), loaded on startup, saved after
   every check round and on shutdown. Corrupt history files log a
