@@ -25,7 +25,13 @@ endpoint, and serves a small status dashboard over `http.server`.
   untouched. The dashboard shows MAINTENANCE and lists the windows.
 - Uptime % over the last 24 hours and the last 7 days, so a recent
   outage shows up even when the all-time figure still looks fine.
-- A plain HTML dashboard: endpoint, status, uptime %, latency, last check.
+- A static status page: `python3 -m healthcheck.cli --config config.json --status-page status.html`
+  renders the same view as the dashboard — current status, uptime
+  24h/7d, latency sparkline — plus a recent-incidents list per
+  endpoint, as one self-contained HTML file with no external
+  references, so it can be hosted anywhere with no server. It is a
+  snapshot of the persisted history; regenerate it to update it.
+  Combine with `--once` to check first, then render.
   An endpoint whose dependency is not up shows SKIPPED, with the
   dependency named — a skip is not downtime.
 
@@ -51,6 +57,20 @@ once and exit:
 
 ```sh
 python3 -m healthcheck.cli --config config.json --once
+```
+
+Generate a static status page from the persisted history (needs
+`history_file` in the config, or `--history-file`), hostable anywhere
+with no server:
+
+```sh
+python3 -m healthcheck.cli --config config.json --status-page status.html
+```
+
+Check once, then render the page from the fresh results:
+
+```sh
+python3 -m healthcheck.cli --config config.json --once --status-page status.html
 ```
 
 ## Config
@@ -170,8 +190,26 @@ make test   # python3 -m unittest discover -s tests -v
 - [x] Maintenance windows: scheduled windows per endpoint during
   which checks are paused, alerts suppressed, and uptime untouched,
   shown on the dashboard — done in 0.10.0.
+- [x] Static status-page generator: render the persisted history as
+  a self-contained HTML status page (status, uptime 24h/7d,
+  sparkline, recent incidents) via `--status-page`, hostable
+  anywhere with no server — done in 0.11.0.
 
 ## Changelog
+
+- **0.11.0** — Static status-page generator: `--status-page PATH`
+  writes a self-contained HTML status page from the persisted check
+  history — current status per endpoint, uptime all-time / 24h / 7d,
+  most recent latency, an inline latency sparkline, and a
+  recent-incidents list (consecutive confirmed-down checks grouped
+  into one incident, with start, end or "ongoing", duration, and
+  failed-check count; skips, unconfirmed failures, and maintenance
+  rounds are not incidents). The page has no external references
+  (no scripts, stylesheets, images, or links), so it can be hosted
+  anywhere or opened straight off disk. It is a snapshot —
+  regenerate it to update it. Combines with `--once` to check
+  first, then render. The file is written atomically, like history
+  persistence.
 
 - **0.10.0** — Maintenance windows: an endpoint can declare
   `maintenance_windows` — recurring weekly windows (`start` /

@@ -22,6 +22,7 @@ from .flap import DEFAULT_THRESHOLD, FlapDetector, validate_threshold
 from .maintenance import (active_window, summarize_window,
                           validate_maintenance_windows)
 from .server import serve
+from .statuspage import write_status_page
 from .store import History
 
 logging.basicConfig(level=logging.INFO,
@@ -373,8 +374,14 @@ def main(argv=None):
                         help="alert only after this many consecutive "
                              "failed checks (overrides the config "
                              "file's flap_threshold, default 3)")
+    parser.add_argument("--status-page", default=None, metavar="PATH",
+                        help="write a self-contained static HTML status "
+                             "page from the persisted check history to "
+                             "PATH and exit (combines with --once to "
+                             "check first, then render)")
     args = parser.parse_args(argv)
     cfg = load_config(args.config)
+    history = None
     if args.once:
         path = history_path(cfg, args)
         history = load_history(path, maxlen=cfg.get("history", 100))
@@ -382,6 +389,15 @@ def main(argv=None):
                   alerter=make_alerter(cfg, args),
                   flap_detector=FlapDetector(flap_threshold(cfg, args)))
         save_history(history, path)
+    if args.status_page:
+        if history is None:
+            path = history_path(cfg, args)
+            history = load_history(path, maxlen=cfg.get("history", 100))
+        write_status_page(history, cfg.get("endpoints", []),
+                          args.status_page)
+        log.info("status page written to %s", args.status_page)
+        return 0
+    if args.once:
         return 0
     run_forever(cfg, args.host, args.port, args)
     return 0
