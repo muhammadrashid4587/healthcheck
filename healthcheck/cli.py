@@ -55,6 +55,7 @@ def load_config(path):
             raise ValueError(f"tcp endpoint missing host/port: {ep!r}")
     validate_dependencies(endpoints)
     validate_body_assertions(endpoints)
+    validate_expect_status(endpoints)
     validate_maintenance_windows(endpoints)
     validate_sla_targets(endpoints)
     validate_endpoint_webhooks(endpoints)
@@ -244,6 +245,86 @@ def validate_endpoint_webhooks(endpoints):
             raise ValueError(
                 f"endpoint {ep['name']!r}: webhook must be an "
                 f"http(s) URL, not {url!r}")
+
+
+def validate_expect_status(endpoints):
+    """Reject bad `expect_status` entries at config load.
+
+    An endpoint may assert on the exact HTTP status it expects
+    (e.g. 204 for a no-content health endpoint). Only http
+    endpoints can set it, and the value must be an integer HTTP
+    status code (100-599). Raises ValueError with a clear message;
+    the monitor refuses to start rather than run with a check it
+    can never pass.
+    """
+    for ep in endpoints:
+        value = ep.get("expect_status")
+        if value is None:
+            continue
+        if ep["type"] != "http":
+            raise ValueError(
+                f"endpoint {ep['name']!r}: expect_status only applies "
+                f"to http endpoints")
+        if (isinstance(value, bool) or not isinstance(value, int)
+                or not 100 <= value <= 599):
+            raise ValueError(
+                f"endpoint {ep['name']!r}: expect_status must be an "
+                f"HTTP status code (100-599), not {value!r}")
+
+
+def parse_expect_status(spec):
+    """Parse a --expect-status NAME=STATUS spec.
+
+    The name is an endpoint in the config; the status is the exact
+    HTTP status code that endpoint must return to count as up.
+    A spec without '=', an empty name, or a status that is not an
+    integer 100-599 is rejected. Raises ValueError with a clear
+    message.
+    """
+    if "=" not in spec:
+        raise ValueError(
+            f"--expect-status needs NAME=STATUS, got {spec!r}")
+    name, status = spec.split("=", 1)
+    name = name.strip()
+    status = status.strip()
+    if not name or not status:
+        raise ValueError(
+            f"--expect-status needs a non-empty name and status, "
+            f"got {spec!r}")
+    try:
+        code = int(status)
+    except ValueError:
+        raise ValueError(
+            f"--expect-status status must be an integer, got "
+            f"{status!r}") from None
+    if str(code) != status or not 100 <= code <= 599:
+        raise ValueError(
+            f"--expect-status status must be an HTTP status code "
+            f"(100-599), got {status!r}")
+    return name, code
+
+
+def apply_expect_status_overrides(cfg, args):
+    """Apply --expect-status flags to the config's endpoints.
+
+    Each flag sets (or replaces) the endpoint's `expect_status` —
+    the flag wins over the config file, like --flap-threshold and
+    --webhook-url do for their settings. A flag naming an endpoint
+    that is not in the config is rejected, so a typo does not
+    silently do nothing. `args` may be a namespace without the
+    attribute (tests build their own) — then there is nothing to
+    apply. Raises ValueError with a clear message.
+    """
+    specs = getattr(args, "expect_status", None) or []
+    if not specs:
+        return
+    by_name = {ep["name"]: ep for ep in cfg.get("endpoints", [])}
+    for spec in specs:
+        name, code = parse_expect_status(spec)
+        if name not in by_name:
+            raise ValueError(
+                f"--expect-status names unknown endpoint {name!r}")
+        by_name[name]["expect_status"] = code
 
 
 def validate_body_assertions(endpoints):
@@ -615,6 +696,17 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
             if config_path is not None:
                 new_cfg = reload_config(config_path, args, state_cfg)
                 if new_cfg is not state_cfg:
+                    try:
+                        apply_expect_status_overrides(new_cfg, args)
+                    except ValueError as exc:
+                        # A flag naming an endpoint the reloaded file
+                        # dropped: keep the running config, like a
+                        # reload that fails validation.
+                        log.warning(
+                            "config reload from %s failed (%s); keeping "
+                            "the current config", config_path, exc)
+                        new_cfg = state_cfg
+                if new_cfg is not state_cfg:
                     old_names = {ep["name"] for ep in endpoints}
                     endpoints = list(new_cfg.get("endpoints", []))
                     new_names = {ep["name"] for ep in endpoints}
@@ -719,6 +811,12 @@ def main(argv=None):
                         help="alert only after this many consecutive "
                              "failed checks (overrides the config "
                              "file's flap_threshold, default 3)")
+    parser.add_argument("--expect-status", default=None,
+                        action="append", metavar="NAME=STATUS",
+                        help="require this exact HTTP status code from "
+                             "the named endpoint (overrides the config "
+                             "file's expect_status for that endpoint; "
+                             "repeatable)")
     parser.add_argument("--status-page", default=None, metavar="PATH",
                         help="write a self-contained static HTML status "
                              "page from the persisted check history to "
@@ -745,6 +843,10 @@ def main(argv=None):
     if args.status_page_source and not args.status_page:
         parser.error("--status-page-source needs --status-page")
     cfg = load_config(args.config)
+    try:
+        apply_expect_status_overrides(cfg, args)
+    except ValueError as exc:
+        parser.error(str(exc))
     history = None
     if args.sla_report:
         if args.sla_report == "current":

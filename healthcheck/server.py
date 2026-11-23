@@ -1,8 +1,8 @@
 """Status dashboard over stdlib http.server.
 
 GET / renders a plain HTML table: each endpoint, its current status,
-uptime %, most recent latency, a sparkline of recent latencies, and
-last check time. GET /api/status returns the same data as JSON, for
+its expected vs actual HTTP status, uptime %, most recent latency,
+a sparkline of recent latencies, and last check time. GET /api/status returns the same data as JSON, for
 scripts and other tools that want to consume the live status without
 scraping the HTML. GET /metrics returns the same data in Prometheus
 text format, so a Prometheus server can scrape it. A check skipped
@@ -63,7 +63,11 @@ def status_snapshot(history, endpoints, now=None,
     MAINTENANCE / UNKNOWN — same rules as the dashboard, including
     unconfirmed failures below the flap threshold still showing UP),
     "depends_on" (name or None), "maintenance_windows" (list of
-    {"start", "end", "days"} dicts, or []), "uptime_pct",
+    {"start", "end", "days"} dicts, or []), "expect_status" (the
+    exact HTTP status the endpoint must return, or None when it
+    accepts any 2xx/3xx), "status_code" (the most recent actual
+    HTTP status, or None when the endpoint never returned one),
+    "uptime_pct",
     "uptime_24h_pct", "uptime_7d_pct" (None when there is no data in
     that window — no data is not downtime), "latency_ms" (most recent
     recorded latency, or None), "latency_percentiles" ({"p50", "p95",
@@ -105,6 +109,9 @@ def status_snapshot(history, endpoints, now=None,
             "status": status,
             "depends_on": ep.get("depends_on"),
             "maintenance_windows": windows,
+            "expect_status": ep.get("expect_status"),
+            "status_code": cur.get("status_code") if cur is not None
+                         else None,
             "uptime_pct": history.uptime_pct(name),
             "uptime_24h_pct": history.uptime_pct_window(name, 24 * 3600),
             "uptime_7d_pct": history.uptime_pct_window(name, 7 * 24 * 3600),
@@ -261,16 +268,30 @@ def render_dashboard(history, endpoints, now=None,
         cls = ("up" if status == "UP" else "down" if status == "DOWN"
                else "skipped" if status == "SKIPPED"
                else "maintenance" if status == "MAINTENANCE" else "")
+        # Expected vs actual HTTP status: "expected 204, got 200"
+        # when the endpoint asserts on a code, the bare actual code
+        # when it does not, "-" when no status was ever returned
+        # (TCP endpoints, never-checked, skipped, maintenance).
+        expected = ep.get("expect_status")
+        actual = cur.get("status_code") if cur is not None else None
+        if expected is None and actual is None:
+            http_status = "-"
+        elif expected is None:
+            http_status = str(actual)
+        else:
+            http_status = (f"expected {expected}, got "
+                           f"{actual if actual is not None else '-'}")
         rows.append(
             f"<tr><td>{html.escape(name)}</td>"
             f"<td class=\"{cls}\">{status}</td>"
+            f"<td>{html.escape(http_status)}</td>"
             f"<td>{html.escape(depends_on)}</td>"
             f"<td>{html.escape(windows)}</td>"
             f"<td>{up}</td><td>{day}</td><td>{week}</td><td>{latency}</td>"
             f"<td>{pct_text}</td>"
             f"<td>{latency_sparkline(history, name)}</td><td>{last}</td></tr>"
         )
-    body = "\n".join(rows) or "<tr><td colspan=\"11\">No endpoints configured.</td></tr>"
+    body = "\n".join(rows) or "<tr><td colspan=\"12\">No endpoints configured.</td></tr>"
     if status_page_sources:
         items = "".join(
             f"<li>{html.escape(src['label'])} — "
@@ -283,7 +304,7 @@ def render_dashboard(history, endpoints, now=None,
 <html><head><meta charset="utf-8"><title>healthcheck</title>
 <style>body{{font-family:sans-serif;max-width:720px;margin:2em auto}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccc;padding:6px 10px;text-align:left}}.up{{color:green;font-weight:bold}}.down{{color:red;font-weight:bold}}.skipped{{color:#b8860b;font-weight:bold}}.maintenance{{color:#6a5acd;font-weight:bold}}</style>
 </head><body><h1>healthcheck</h1>
-<table><tr><th>Endpoint</th><th>Status</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Latency</th><th>Latency p50 / p95 / p99</th><th>Latency history</th><th>Last check</th></tr>
+<table><tr><th>Endpoint</th><th>Status</th><th>HTTP status</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Latency</th><th>Latency p50 / p95 / p99</th><th>Latency history</th><th>Last check</th></tr>
 {body}</table>
 {sources_html}<p>Rendered {time.strftime('%Y-%m-%d %H:%M:%S')} — reload to update.</p></body></html>"""
 

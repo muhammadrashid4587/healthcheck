@@ -13,7 +13,12 @@ endpoint, and serves a small status dashboard over `http.server`.
 - HTTP checks (ok on 2xx/3xx, with status code and latency recorded).
   An `http` endpoint can also assert on the response body
   (`expect_body` substring, `expect_body_regex` pattern): a 200
-  that serves an error page is not "up".
+  that serves an error page is not "up". It can also assert on the
+  exact status code (`expect_status`, e.g. 204 for a health
+  endpoint that never returns 200): any other status is DOWN,
+  with the expected and actual codes named. The dashboard and
+  `GET /api/status` show the expected vs actual status per
+  endpoint.
 - TCP connect checks for services without HTTP.
 - Per-endpoint uptime % and recent check history.
 - Flap detection: an endpoint only flips to DOWN (and only alerts)
@@ -272,6 +277,23 @@ normally without it.
   A bad regex, a non-string value, or either key on a `tcp`
   endpoint is rejected at config load. A 4xx/5xx status is already
   DOWN, so no assertion runs there.
+  `expect_status` is an exact status code the response must have
+  (e.g. `204` for a no-content health endpoint): when it is set
+  it replaces the 2xx/3xx rule entirely, so a 200 from an endpoint
+  that should answer 204 is DOWN, with the expected and actual
+  codes named in the error (`expected HTTP 204, got 200`). An
+  expected 4xx/5xx status counts too — a 404 that is supposed to
+  be a 404 is UP. Body assertions still apply once the status
+  matches. The code is checked against the final response status,
+  after redirects are followed. A non-integer value, a code
+  outside 100–599, or the key on a `tcp` endpoint is rejected at
+  config load. The `--expect-status NAME=STATUS` flag (repeatable)
+  sets or replaces it for one endpoint, and the flag wins over the
+  config file; a flag naming an endpoint that is not in the config
+  is rejected. A SIGHUP reload picks up `expect_status` changes
+  from the edited file (a bad value keeps the running config),
+  and re-applies the flags — a flag naming an endpoint the
+  reloaded file dropped keeps the running config too.
   `cafile`, `cert`, and `key` are optional: `cafile` is a PEM bundle
   of certificate authorities to trust for an `https://` endpoint
   (for a private or self-signed CA); `cert` and `key` are a client
@@ -311,8 +333,11 @@ normally without it.
 ## Dashboard
 
 `GET /` renders a table with one row per endpoint: name, current status
-(UP / DOWN / SKIPPED / MAINTENANCE / UNKNOWN), the endpoint it depends
-on (or `-`), its maintenance windows (or `-`), uptime % over the
+(UP / DOWN / SKIPPED / MAINTENANCE / UNKNOWN), the HTTP status
+(`expected 204, got 200` when the endpoint asserts on a code, the
+bare actual code when it does not, `-` when no status was ever
+returned — TCP endpoints, never-checked, skipped, maintenance),
+the endpoint it depends on (or `-`), its maintenance windows (or `-`), uptime % over the
 recorded history, uptime %
 over the last 24 hours and the last 7 days (a `-` when no checks fall
 in that window — no data is not downtime), most recent
@@ -331,7 +356,10 @@ other tools: `{"generated_at": <epoch>, "endpoints": [...]}` with one
 object per endpoint — `name`, `status` (UP / DOWN / SKIPPED /
 MAINTENANCE / UNKNOWN, same rules as the dashboard), `depends_on`
 (name or `null`), `maintenance_windows` (list of `start` / `end` /
-`days`), `uptime_pct`, `uptime_24h_pct`, `uptime_7d_pct` (`null` when
+`days`), `expect_status` (the exact status the endpoint must
+return, or `null` when it accepts any 2xx/3xx), `status_code` (the
+most recent actual HTTP status, or `null` when none was ever
+returned), `uptime_pct`, `uptime_24h_pct`, `uptime_7d_pct` (`null` when
 no checks fall in that window), `latency_ms` (most recent, or `null`),
 `latency_percentiles` (`{"p50", "p95", "p99"}` in ms over the
 last 24 hours, or `null` when no checks ran in that window), and
@@ -475,12 +503,36 @@ make test   # python3 -m unittest discover -s tests -v
   and replace a config entry with the same label. The dashboard
   and `GET /api/status` list the merged sources — done in
   0.22.0.
-- [ ] Next: per-endpoint expected HTTP status (`expect_status`,
+- [x] Per-endpoint expected HTTP status (`expect_status`,
   e.g. 204 for a health endpoint that never returns 200), so a
   check can assert on the exact status code instead of only
-  accepting any 2xx/3xx.
+  accepting any 2xx/3xx. A mismatch is DOWN, with the expected
+  and actual codes named, and goes through the same flap and
+  alert rules as any other failure; an expected 4xx/5xx counts
+  too. Set in the config file or with `--expect-status
+  NAME=STATUS` (repeatable, flag wins), validated at load and
+  on SIGHUP reload; the dashboard gains an HTTP status column
+  and `GET /api/status` gains `expect_status` / `status_code`
+  per endpoint — done in 0.23.0.
 
 ## Changelog
+
+- **0.23.0** — Per-endpoint expected HTTP status: an `http`
+  endpoint can set `expect_status` (e.g. 204) in the config, and
+  only that exact status counts as up — any other status is DOWN,
+  with the expected and actual codes named in the error, and the
+  failure goes through the same flap detection, alert, and uptime
+  rules as any other failed check. An expected 4xx/5xx status
+  counts too (urllib raises for those, so the error path checks
+  the expectation before failing). Body assertions still apply
+  once the status matches. `--expect-status NAME=STATUS`
+  (repeatable) sets or replaces it for one endpoint and wins over
+  the config file; a bad value, a non-integer, or the key on a
+  `tcp` endpoint is rejected at config load, and a SIGHUP reload
+  picks up changes (a bad edit keeps the running config). The
+  dashboard gains an HTTP status column (`expected 204, got 200`,
+  the bare code, or `-`) and `GET /api/status` gains
+  `expect_status` and `status_code` per endpoint.
 
 - **0.22.0** — Status-page sources in the config file: a
   `status_page_sources` list of `{"label", "path"}` and

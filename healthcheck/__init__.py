@@ -7,7 +7,7 @@ when an endpoint changes state, or a periodic digest that batches
 the changes into one summary (webhook and/or a rendered email body).
 """
 
-__version__ = "0.22.0"
+__version__ = "0.23.0"
 
 from .checker import (CheckResult, check_endpoint, check_http, check_tcp,
                       maintenance_result)

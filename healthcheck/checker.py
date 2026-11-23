@@ -117,7 +117,8 @@ def _check_body(name, body, latency, status, expect_body,
 
 
 def check_http(name, url, timeout=5.0, cafile=None, cert=None, key=None,
-               expect_body=None, expect_body_regex=None):
+               expect_body=None, expect_body_regex=None,
+               expect_status=None):
     """GET url; ok when the status is 2xx or 3xx.
 
     For https:// URLs, `cafile`/`cert`/`key` select a custom TLS
@@ -131,7 +132,25 @@ def check_http(name, url, timeout=5.0, cafile=None, cert=None, key=None,
     are, both must hold. The body is only read when an assertion is
     configured, and never more than MAX_BODY_BYTES of it. A failed
     status (4xx/5xx) is already not ok, so no assertion runs there.
+
+    `expect_status` is an exact status code the response must have —
+    for a health endpoint that answers 204 and never 200, say. When
+    it is set it replaces the 2xx/3xx rule entirely: any other status
+    is DOWN, with the expected and actual codes named in the error.
+    It is checked against the final response status, after any
+    redirects are followed (urllib follows them, as before). Body
+    assertions still apply once the status matches. A non-integer
+    or out-of-range value raises ValueError — config load rejects
+    bad values first, but check_http must stay safe when called
+    directly.
     """
+    if expect_status is not None and (
+            isinstance(expect_status, bool)
+            or not isinstance(expect_status, int)
+            or not 100 <= expect_status <= 599):
+        raise ValueError(
+            f"expect_status must be an HTTP status code (100-599), "
+            f"not {expect_status!r}")
     started = time.monotonic()
     try:
         context = None
@@ -145,7 +164,14 @@ def check_http(name, url, timeout=5.0, cafile=None, cert=None, key=None,
                     if expect_body is not None
                     or expect_body_regex is not None else resp.read(1))
         latency = (time.monotonic() - started) * 1000
-        if not 200 <= status < 400:
+        if expect_status is not None:
+            if status != expect_status:
+                return CheckResult(
+                    name=name, ok=False, latency_ms=latency,
+                    status_code=status,
+                    error=f"expected HTTP {expect_status}, got {status}",
+                    checked_at=time.time())
+        elif not 200 <= status < 400:
             return CheckResult(name=name, ok=False, latency_ms=latency,
                                status_code=status, error=f"HTTP {status}",
                                checked_at=time.time())
@@ -156,6 +182,24 @@ def check_http(name, url, timeout=5.0, cafile=None, cert=None, key=None,
                            status_code=status, checked_at=time.time())
     except urllib.error.HTTPError as exc:
         latency = (time.monotonic() - started) * 1000
+        if expect_status is not None and exc.code == expect_status:
+            # The expected status arrived as an error response (4xx /
+            # 5xx): it still counts, with body assertions applied.
+            body = (exc.read(MAX_BODY_BYTES + 1)
+                    if expect_body is not None
+                    or expect_body_regex is not None else b"")
+            if expect_body is not None or expect_body_regex is not None:
+                return _check_body(name, body, latency, exc.code,
+                                   expect_body, expect_body_regex)
+            return CheckResult(name=name, ok=True, latency_ms=latency,
+                               status_code=exc.code,
+                               checked_at=time.time())
+        if expect_status is not None:
+            return CheckResult(
+                name=name, ok=False, latency_ms=latency,
+                status_code=exc.code,
+                error=f"expected HTTP {expect_status}, got {exc.code}",
+                checked_at=time.time())
         return CheckResult(name=name, ok=False, latency_ms=latency,
                            status_code=exc.code, error=f"HTTP {exc.code}",
                            checked_at=time.time())
@@ -192,5 +236,6 @@ def check_endpoint(endpoint, timeout=5.0):
                           cert=endpoint.get("cert"),
                           key=endpoint.get("key"),
                           expect_body=endpoint.get("expect_body"),
-                          expect_body_regex=endpoint.get("expect_body_regex"))
+                          expect_body_regex=endpoint.get("expect_body_regex"),
+                          expect_status=endpoint.get("expect_status"))
     raise ValueError(f"unknown endpoint type: {kind!r}")
