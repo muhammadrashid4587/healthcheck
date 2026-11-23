@@ -32,6 +32,18 @@ endpoint, and serves a small status dashboard over `http.server`.
   `--max-latency NAME=MS` (repeatable, flag wins); a bad value
   is rejected at config load, and a SIGHUP reload picks up
   changes.
+- Dry-run mode (`--check [NAME]`): validate the config, run one
+  check pass over every endpoint (or just the named one, with its
+  dependencies), print the per-endpoint verdict — UP/DOWN with
+  status and latency, the rule that failed the check named in the
+  error (a latency budget breach, an `expect_status` mismatch, a
+  body assertion), SKIPPED with the dependency named, MAINTENANCE
+  with the window — and exit 0 when all checked endpoints are up
+  or in maintenance, 1 when any is down. Nothing is persisted,
+  no alert fires, and no dashboard starts, so it is safe to run
+  from a deploy script or CI. A single failed check is DOWN here:
+  the flap threshold needs repeated rounds and does not apply to
+  a one-shot pass.
 - TCP connect checks for services without HTTP.
 - Per-endpoint uptime % and recent check history.
 - Flap detection: an endpoint only flips to DOWN (and only alerts)
@@ -127,6 +139,16 @@ once and exit:
 
 ```sh
 python3 -m healthcheck.cli --config config.json --once
+```
+
+Dry-run mode: validate the config, check every endpoint once (or
+just one, with `--check NAME`), print the verdict per endpoint, and
+exit 0 when all checked endpoints are up, 1 when any is down — no
+history is written, no alert fires, no dashboard starts:
+
+```sh
+python3 -m healthcheck.cli --config config.json --check
+python3 -m healthcheck.cli --config config.json --check api
 ```
 
 Generate a static status page from the persisted history (needs
@@ -556,8 +578,32 @@ make test   # python3 -m unittest discover -s tests -v
   wins), validated at load and on SIGHUP reload; the dashboard
   gains a Latency budget column and `GET /api/status` gains
   `max_latency_ms` per endpoint — done in 0.24.0.
+- [x] Dry-run mode (`--check [NAME]`): validate the config, run
+  one check pass over every endpoint (or just the named one, with
+  its dependencies), print the per-endpoint verdict (UP/DOWN with
+  status and latency, the rule that failed the check named, SKIPPED
+  with the dependency, MAINTENANCE with the window), and exit 0
+  when all checked endpoints are up, 1 when any is down — no
+  history written, no alert fired, no dashboard started, so it is
+  safe from a deploy script or CI. A single failed check is DOWN
+  (the flap threshold needs repeated rounds and does not apply to
+  a one-shot pass); an unknown name is rejected at exit code 2 —
+  done in 0.25.0.
 
 ## Changelog
+
+- **0.25.0** — Dry-run mode: `--check` validates the config, runs
+  one check pass over every endpoint, prints the per-endpoint
+  verdict (UP/DOWN with status and latency, the rule that failed
+  the check named in the error, SKIPPED with the dependency named,
+  MAINTENANCE with the window), and exits 0 when all checked
+  endpoints are up or in maintenance, 1 when any is down.
+  `--check NAME` checks just that endpoint (with its dependencies,
+  so a dependent can be judged at all); an unknown name is
+  rejected with exit code 2. Nothing is persisted, no alert fires,
+  and no dashboard starts, so it is safe to run from a deploy
+  script or CI. A single failed check is DOWN — the flap threshold
+  needs repeated rounds and does not apply to a one-shot pass.
 
 - **0.24.0** — Per-endpoint latency budgets: an endpoint can set
   `max_latency_ms` (e.g. 500) in the config, and a check that

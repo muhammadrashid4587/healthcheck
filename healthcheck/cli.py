@@ -746,6 +746,109 @@ def check_all(endpoints, history, timeout=5.0, alerter=None,
     return results
 
 
+def select_check_targets(endpoints, name):
+    """Endpoints a --check run covers: all of them, or one by name.
+
+    A named endpoint brings its transitive dependencies along —
+    without them a dependent could never be judged (its dependency
+    would be UNKNOWN and it would always read SKIPPED). The result
+    is in dependency order. Raises ValueError naming an unknown
+    endpoint, so a typo does not silently check nothing.
+    """
+    if name is None:
+        return list(endpoints)
+    by_name = {ep["name"]: ep for ep in endpoints}
+    if name not in by_name:
+        raise ValueError(f"--check names unknown endpoint {name!r}")
+    selected, seen = [], set()
+
+    def add(ep_name):
+        if ep_name in seen:
+            return
+        seen.add(ep_name)
+        dep = by_name[ep_name].get("depends_on")
+        if dep is not None:
+            add(dep)
+        selected.append(by_name[ep_name])
+
+    add(name)
+    return selected
+
+
+def check_verdict(result):
+    """One-word verdict for a dry-run result: UP, DOWN, SKIPPED, or
+    MAINTENANCE. A failed check is DOWN; a check that never ran is
+    SKIPPED (dependency not up) or MAINTENANCE (in a window)."""
+    if result.ok:
+        return "UP"
+    if result.maintenance:
+        return "MAINTENANCE"
+    if result.skipped:
+        return "SKIPPED"
+    return "DOWN"
+
+
+def format_check_line(result):
+    """One printable line for a dry-run result: verdict, status or
+    the rule that fired, and latency.
+
+    The error text already names the rule that failed the check —
+    a latency budget breach, an expect_status mismatch, a body
+    assertion, a dependency skip, a maintenance window — so the
+    operator sees why, not just that it is down.
+    """
+    verdict = check_verdict(result)
+    if result.ok:
+        detail = (f"HTTP {result.status_code}"
+                  if result.status_code is not None else "")
+        return (f"{result.name}: UP"
+                + (f" {detail}" if detail else "")
+                + f" {result.latency_ms:.1f} ms").strip()
+    if verdict == "DOWN":
+        if result.status_code is not None:
+            detail = f"HTTP {result.status_code}"
+            if result.error and result.error != f"HTTP {result.status_code}":
+                detail += f" ({result.error})"
+        else:
+            detail = result.error or ""
+        return (f"{result.name}: DOWN"
+                + (f" {detail}" if detail else "")
+                + f" {result.latency_ms:.1f} ms").strip()
+    return f"{result.name}: {verdict} {result.error or ''}".strip()
+
+
+def dry_run_check(endpoints, name=None):
+    """One check pass over the selected endpoints, printed, nothing
+    else: no history is written, no alert fires, no dashboard
+    starts. Returns (results, exit_code): exit 0 when every checked
+    endpoint is UP or in maintenance, 1 when any is DOWN (a SKIPPED
+    endpoint's dependency is in the results too, so a down
+    dependency already fails the run on its own line).
+
+    A dry run is a single pass, so the flap threshold does not
+    apply: one failed check is DOWN here, where the monitor would
+    call the same failure unconfirmed until the threshold's
+    consecutive failures. The check itself — status, body and
+    latency-budget rules, dependencies, maintenance windows — is
+    the same code the monitor runs.
+    """
+    targets = select_check_targets(endpoints, name)
+    history = History()
+    results = check_all(targets, history, alerter=None,
+                        flap_detector=FlapDetector(1))
+    for result in results.values():
+        print(format_check_line(result))
+    counts = {"UP": 0, "DOWN": 0, "SKIPPED": 0, "MAINTENANCE": 0}
+    for result in results.values():
+        counts[check_verdict(result)] += 1
+    parts = [f"{counts[verdict]} {verdict.lower()}"
+             for verdict in ("UP", "DOWN", "SKIPPED", "MAINTENANCE")
+             if counts[verdict]]
+    print(f"{len(results)} endpoint(s) checked: "
+          f"{', '.join(parts) if parts else 'none'}")
+    return results, 1 if counts["DOWN"] else 0
+
+
 def monitor_loop(cfg, history, path, args, stop, config_path=None,
                  reload_requested=None, max_rounds=None,
                  live_endpoints=None, live_sources=None):
@@ -894,6 +997,14 @@ def main(argv=None):
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--once", action="store_true",
                         help="check every endpoint once and exit")
+    parser.add_argument("--check", nargs="?", const="__all__",
+                        default=None, metavar="NAME",
+                        help="dry run: validate the config, check every "
+                             "endpoint once (or just the named one, with "
+                             "its dependencies) and exit with 0 when all "
+                             "checked endpoints are up, 1 when any is "
+                             "down — no history is written, no alert "
+                             "fires, no dashboard starts")
     parser.add_argument("--history-file", default=None,
                         help="persist check history to this JSON file "
                              "(overrides the config file's history_file)")
@@ -963,6 +1074,13 @@ def main(argv=None):
         report = sla_report(history, cfg.get("endpoints", []), year, month)
         print(render_sla_report(report, year, month), end="")
         return 0
+    if args.check is not None:
+        name = None if args.check == "__all__" else args.check
+        try:
+            _, code = dry_run_check(cfg.get("endpoints", []), name)
+        except ValueError as exc:
+            parser.error(str(exc))
+        return code
     if args.once:
         path = history_path(cfg, args)
         history = load_history(path, maxlen=cfg.get("history", 100))
