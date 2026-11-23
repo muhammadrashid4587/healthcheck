@@ -6,10 +6,11 @@ dashboard. Alerts are log lines, plus an optional webhook that fires
 when an endpoint changes state.
 """
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 
 from .checker import (CheckResult, check_endpoint, check_http, check_tcp,
                       maintenance_result)
+from .cli import (install_reload_handler, monitor_loop, reload_config)
 from .flap import DEFAULT_THRESHOLD, FlapDetector, FlapOutcome
 from .maintenance import (active_window, in_maintenance, summarize_windows,
                           validate_maintenance_windows)
@@ -33,10 +34,13 @@ __all__ = [
     "check_tcp",
     "endpoint_status",
     "in_maintenance",
+    "install_reload_handler",
     "maintenance_result",
+    "monitor_loop",
     "monthly_uptime",
     "parse_month",
     "recent_incidents",
+    "reload_config",
     "render_sla_report",
     "render_status_page",
     "latency_sparkline",

@@ -44,6 +44,13 @@ endpoint, and serves a small status dashboard over `http.server`.
   --sla-report 2026-11` prints that calendar month's uptime per
   endpoint against its target, with the breach list — endpoints
   that fell short, and by how many percentage points.
+- Config hot-reload: while the monitor is running, edit
+  `config.json` and send SIGHUP (`kill -HUP <pid>`); the new
+  endpoints, check interval, webhook, and flap threshold take
+  effect before the next check round, and the dashboard follows.
+  A bad edit never takes the monitor down — it is logged and the
+  running config is kept. Flap state resets on a reload, and a
+  changed `history_file` still needs a restart.
 
 ## What it is not
 
@@ -91,6 +98,28 @@ python3 -m healthcheck.cli --config config.json --sla-report 2026-11
 ```
 
 With no month given, `--sla-report` uses the current month.
+
+While the monitor is running, edit the config file and send
+SIGHUP to reload it without restarting:
+
+```sh
+kill -HUP <pid>   # new endpoints, interval, webhook, and flap
+                  # threshold apply before the next check round
+```
+
+The reloaded config is validated the same way as at startup: a
+missing file, bad JSON, or an invalid endpoint (unknown
+dependency, bad `sla_target`, bad regex, ...) is logged as a
+warning and the running config is kept — the monitor never stops
+on a bad edit. Endpoints added by the reload are checked from the
+next round, removed ones stop being checked, and the dashboard
+and `GET /api/status` show the new endpoint list. Two things do
+not change on a reload: flap state resets (an endpoint mid-outage
+needs the threshold's failures again before it re-alerts), and
+`history_file` is not re-read — changing where history is stored
+still needs a restart. SIGHUP reload is unavailable on Windows
+and when the monitor is not on the main thread; the monitor runs
+normally without it.
 
 ## Config
 
@@ -257,8 +286,24 @@ make test   # python3 -m unittest discover -s tests -v
   `--sla-report [YYYY-MM]` prints a calendar month's uptime per
   endpoint against its target, with the breach list — done in
   0.13.0.
+- [x] Config hot-reload: edit the config file and send SIGHUP;
+  the new endpoints, interval, webhook, and flap threshold apply
+  before the next check round, and the dashboard follows. A bad
+  config is logged and the running one kept, so a bad edit never
+  takes the monitor down — done in 0.14.0.
 
 ## Changelog
+
+- **0.14.0** — Config hot-reload: send SIGHUP (`kill -HUP
+  <pid>`) and the monitor reloads its config file before the
+  next check round — new endpoints, `interval_seconds`,
+  `webhook_url`, and `flap_threshold` take effect, and the
+  dashboard and `GET /api/status` show the new endpoint list.
+  The reload is validated like a startup load: a missing file,
+  bad JSON, or invalid config logs a warning and keeps the
+  running config, so a bad edit never stops the monitor. Flap
+  state resets on a reload, and `history_file` is not re-read
+  (changing it still needs a restart).
 
 - **0.13.0** — SLA reporting: an endpoint can declare
   `sla_target` (a percentage, e.g. 99.9) in the config, and

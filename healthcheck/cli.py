@@ -13,6 +13,7 @@ import dataclasses
 import json
 import logging
 import re
+import signal
 import threading
 import time
 
@@ -50,6 +51,46 @@ def load_config(path):
     if "flap_threshold" in cfg:
         validate_threshold(cfg["flap_threshold"])
     return cfg
+
+
+def reload_config(path, args, current_cfg):
+    """Load the config file again, returning the new config.
+
+    A bad edit must never take the monitor down: if the file is
+    missing, unreadable, or fails validation, a warning is logged
+    and the current config is returned unchanged (identity — the
+    caller checks `is` to tell a reload from a no-op).
+    """
+    try:
+        return load_config(path)
+    except (OSError, ValueError) as exc:
+        log.warning("config reload from %s failed (%s); keeping the "
+                    "current config", path, exc)
+        return current_cfg
+
+
+def install_reload_handler(reload_requested):
+    """Install a SIGHUP handler that flags a config reload.
+
+    The handler only sets an event; the checker loop applies the
+    reload before its next round, so a reload never interrupts a
+    check in progress. Signals can only be installed from the main
+    thread, and SIGHUP does not exist on Windows — where either
+    applies, this logs a warning and returns False instead of
+    crashing, and the monitor runs without hot-reload.
+    """
+    def handler(signum, frame):
+        reload_requested.set()
+        log.info("SIGHUP received; config reloads before the next "
+                 "check round")
+
+    try:
+        signal.signal(signal.SIGHUP, handler)
+    except (AttributeError, OSError, ValueError) as exc:
+        log.warning("could not install SIGHUP handler (%s); config "
+                    "reload unavailable", exc)
+        return False
+    return True
 
 
 def validate_body_assertions(endpoints):
@@ -323,33 +364,100 @@ def check_all(endpoints, history, timeout=5.0, alerter=None,
     return results
 
 
-def run_forever(cfg, host, port, args=None):
-    endpoints = cfg.get("endpoints", [])
+def monitor_loop(cfg, history, path, args, stop, config_path=None,
+                 reload_requested=None, max_rounds=None,
+                 live_endpoints=None):
+    """Check rounds until `stop` is set; returns the config in effect
+    when the loop ends.
+
+    When `reload_requested` is set (by the SIGHUP handler installed
+    in the main thread) and `config_path` is given, the config file
+    is reloaded before the next round and the new endpoints,
+    interval, webhook, and flap threshold take effect immediately.
+    A reload that fails validation keeps the old config — see
+    `reload_config`. Flap state resets on a reload: the new detector
+    has no memory of the failures counted under the old config, so
+    an endpoint mid-outage needs the threshold's failures again
+    before it re-alerts. History is untouched by a reload, and the
+    persisted `history_file` is not re-read: changing it needs a
+    restart. `live_endpoints`, when given, is a list the loop keeps
+    in sync with the current endpoints (slice assignment, so the
+    dashboard server holding the same list sees reloads too).
+    `max_rounds` caps the loop for tests; production runs pass None
+    and stop only on Ctrl-C.
+    """
+    state_cfg = cfg
+    endpoints = list(cfg.get("endpoints", []))
     interval = cfg.get("interval_seconds", 30)
+    alerter = make_alerter(cfg, args)
+    # One detector for the life of a config: the consecutive failure
+    # count must survive across rounds.
+    detector = FlapDetector(flap_threshold(cfg, args))
+    if live_endpoints is not None:
+        live_endpoints[:] = endpoints
+    rounds = 0
+    while not stop.is_set():
+        if reload_requested is not None and reload_requested.is_set():
+            reload_requested.clear()
+            if config_path is not None:
+                new_cfg = reload_config(config_path, args, state_cfg)
+                if new_cfg is not state_cfg:
+                    old_names = {ep["name"] for ep in endpoints}
+                    endpoints = list(new_cfg.get("endpoints", []))
+                    new_names = {ep["name"] for ep in endpoints}
+                    interval = new_cfg.get("interval_seconds", 30)
+                    alerter = make_alerter(new_cfg, args)
+                    detector = FlapDetector(flap_threshold(new_cfg, args))
+                    state_cfg = new_cfg
+                    if live_endpoints is not None:
+                        live_endpoints[:] = endpoints
+                    log.info(
+                        "config reloaded: %d endpoint(s), added %s, "
+                        "removed %s, checking every %ds",
+                        len(endpoints),
+                        sorted(new_names - old_names) or "none",
+                        sorted(old_names - new_names) or "none",
+                        interval)
+        check_all(endpoints, history, alerter=alerter,
+                  flap_detector=detector)
+        save_history(history, path)
+        rounds += 1
+        if max_rounds is not None and rounds >= max_rounds:
+            break
+        stop.wait(interval)
+    return state_cfg
+
+
+def run_forever(cfg, host, port, args=None, config_path=None):
     path = history_path(cfg, args) if args is not None else cfg.get("history_file")
     history = load_history(path, maxlen=cfg.get("history", 100))
-    alerter = make_alerter(cfg, args)
-    # One detector for the life of the process: the consecutive
-    # failure count must survive across rounds.
-    detector = FlapDetector(flap_threshold(cfg, args))
     if path and history.names():
         log.info("loaded history for %d endpoint(s) from %s",
                  len(history.names()), path)
     stop = threading.Event()
-
-    def loop():
-        while not stop.is_set():
-            check_all(endpoints, history, alerter=alerter,
-                      flap_detector=detector)
-            save_history(history, path)
-            stop.wait(interval)
-
-    thread = threading.Thread(target=loop, name="checker", daemon=True)
+    reload_requested = threading.Event()
+    if config_path is not None:
+        # Installed here, on the main thread: signal.signal only
+        # works there, and the checker loop runs in its own thread.
+        install_reload_handler(reload_requested)
+    # One list shared with the dashboard server, kept in sync by the
+    # checker loop, so a SIGHUP reload changes what the dashboard
+    # shows too.
+    live_endpoints = list(cfg.get("endpoints", []))
+    thread = threading.Thread(
+        target=monitor_loop,
+        args=(cfg, history, path, args, stop),
+        kwargs={"config_path": config_path,
+                "reload_requested": reload_requested,
+                "live_endpoints": live_endpoints},
+        name="checker", daemon=True)
     thread.start()
-    log.info("dashboard at http://%s:%d/ — checking %d endpoint(s) every %ds",
-             host, port, len(endpoints), interval)
+    log.info("dashboard at http://%s:%d/ — checking %d endpoint(s) every %ds "
+             "(send SIGHUP to reload the config)",
+             host, port, len(live_endpoints),
+             cfg.get("interval_seconds", 30))
     try:
-        serve(history, endpoints, host=host, port=port)
+        serve(history, live_endpoints, host=host, port=port)
     except KeyboardInterrupt:
         stop.set()
     finally:
@@ -422,7 +530,7 @@ def main(argv=None):
         return 0
     if args.once:
         return 0
-    run_forever(cfg, args.host, args.port, args)
+    run_forever(cfg, args.host, args.port, args, config_path=args.config)
     return 0
 
 
