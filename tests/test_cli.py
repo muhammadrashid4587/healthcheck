@@ -137,9 +137,50 @@ class OnceModePersistenceTests(unittest.TestCase):
             self.assertEqual(os.listdir(d), ["config.json"])
 
 
+class SlaReportTests(unittest.TestCase):
+    def test_sla_report_flag_prints_month(self):
+        # History with a November 2026 uptime of 50% for "api"
+        # against a 99.9% target: the report must call it a breach.
+        import io
+        import time as _time
+        from contextlib import redirect_stdout
+        with tempfile.TemporaryDirectory() as d:
+            cfg_path = os.path.join(d, "config.json")
+            hist_path = os.path.join(d, "history.json")
+            with open(cfg_path, "w", encoding="utf-8") as fh:
+                json.dump({
+                    "history_file": hist_path,
+                    "endpoints": [
+                        {"name": "api", "type": "tcp", "host": "127.0.0.1",
+                         "port": 1, "timeout": 1, "sla_target": 99.9},
+                    ],
+                }, fh)
+            hist = History()
+            nov = _time.mktime((2026, 11, 5, 12, 0, 0, 0, 0, -1))
+            hist.record(_result("api", True, at=nov))
+            hist.record(_result("api", False, at=nov + 60))
+            save_history(hist, hist_path)
+            out = io.StringIO()
+            with redirect_stdout(out):
+                self.assertEqual(
+                    main(["--config", cfg_path,
+                          "--sla-report", "2026-11"]), 0)
+            self.assertIn("SLA report 2026-11", out.getvalue())
+            self.assertIn("BREACH target 99.9%", out.getvalue())
+            self.assertIn("1 breach: api", out.getvalue())
+
+    def test_sla_report_bad_month_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg_path = os.path.join(d, "config.json")
+            with open(cfg_path, "w", encoding="utf-8") as fh:
+                json.dump({"endpoints": []}, fh)
+            with self.assertRaises(SystemExit):
+                main(["--config", cfg_path, "--sla-report", "2026-13"])
+
+
 class VersionTests(unittest.TestCase):
-    def test_version_is_0_12_0(self):
-        self.assertEqual(__version__, "0.12.0")
+    def test_version_is_0_13_0(self):
+        self.assertEqual(__version__, "0.13.0")
 
 
 if __name__ == "__main__":

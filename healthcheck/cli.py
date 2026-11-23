@@ -22,6 +22,8 @@ from .flap import DEFAULT_THRESHOLD, FlapDetector, validate_threshold
 from .maintenance import (active_window, summarize_window,
                           validate_maintenance_windows)
 from .server import serve
+from .sla import (parse_month, render_sla_report, sla_report,
+                  validate_sla_targets)
 from .statuspage import write_status_page
 from .store import History
 
@@ -44,6 +46,7 @@ def load_config(path):
     validate_dependencies(endpoints)
     validate_body_assertions(endpoints)
     validate_maintenance_windows(endpoints)
+    validate_sla_targets(endpoints)
     if "flap_threshold" in cfg:
         validate_threshold(cfg["flap_threshold"])
     return cfg
@@ -379,9 +382,29 @@ def main(argv=None):
                              "page from the persisted check history to "
                              "PATH and exit (combines with --once to "
                              "check first, then render)")
+    parser.add_argument("--sla-report", default=None, nargs="?",
+                        const="current", metavar="YYYY-MM",
+                        help="print the monthly SLA report (uptime per "
+                             "endpoint vs its sla_target, with breaches) "
+                             "for the given month and exit; with no month "
+                             "given, the current month is used")
     args = parser.parse_args(argv)
     cfg = load_config(args.config)
     history = None
+    if args.sla_report:
+        if args.sla_report == "current":
+            now = time.localtime()
+            year, month = now.tm_year, now.tm_mon
+        else:
+            try:
+                year, month = parse_month(args.sla_report)
+            except ValueError as exc:
+                parser.error(str(exc))
+        path = history_path(cfg, args)
+        history = load_history(path, maxlen=cfg.get("history", 100))
+        report = sla_report(history, cfg.get("endpoints", []), year, month)
+        print(render_sla_report(report, year, month), end="")
+        return 0
     if args.once:
         path = history_path(cfg, args)
         history = load_history(path, maxlen=cfg.get("history", 100))

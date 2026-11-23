@@ -39,6 +39,11 @@ endpoint, and serves a small status dashboard over `http.server`.
   last check, dependency, maintenance windows per endpoint), so
   scripts and other tools can consume the live status without
   scraping the HTML.
+- SLA reporting: an endpoint can declare an `sla_target` (e.g.
+  99.9); `python3 -m healthcheck.cli --config config.json
+  --sla-report 2026-11` prints that calendar month's uptime per
+  endpoint against its target, with the breach list — endpoints
+  that fell short, and by how many percentage points.
 
 ## What it is not
 
@@ -78,6 +83,15 @@ Check once, then render the page from the fresh results:
 python3 -m healthcheck.cli --config config.json --once --status-page status.html
 ```
 
+Print the monthly SLA report from the persisted history (needs
+`history_file` in the config, or `--history-file`):
+
+```sh
+python3 -m healthcheck.cli --config config.json --sla-report 2026-11
+```
+
+With no month given, `--sla-report` uses the current month.
+
 ## Config
 
 ```json
@@ -113,6 +127,10 @@ python3 -m healthcheck.cli --config config.json --once --status-page status.html
   delivery is logged as a warning and never stops the monitor. With
   flap detection, the alert fires only when the outage is confirmed
   (see `flap_threshold` above), not on a single failed check.
+- `sla_target` — an uptime target in percent for the endpoint
+  (optional, e.g. `99.9`), used only by the SLA report below.
+  Must be a number above 0 and at most 100; a bad value is
+  rejected at config load.
 - `http` endpoint — `url` required; ok on status 200–399.
   `expect_body` is a substring the response body must contain and
   `expect_body_regex` a regex it must match; when both are set,
@@ -183,6 +201,29 @@ MAINTENANCE / UNKNOWN, same rules as the dashboard), `depends_on`
 no checks fall in that window), `latency_ms` (most recent, or `null`),
 and `last_checked_at` (epoch seconds, or `null` when never checked).
 
+## SLA report
+
+`--sla-report [YYYY-MM]` prints one line per endpoint for a
+calendar month (local time): the month's uptime % and how many
+checks it is based on, against the endpoint's `sla_target`, and a
+breach summary at the end. An endpoint with no target reports
+"no target"; a month with no counted checks reports "no data" —
+no data is not a breach. The same exclusion rules as uptime
+everywhere else apply: skipped checks, unconfirmed failures below
+the flap threshold, and maintenance rounds count neither for nor
+against the month. With no month given, the current month is used.
+
+```sh
+python3 -m healthcheck.cli --config config.json --sla-report 2026-11
+```
+
+```
+SLA report 2026-11
+  example: 99.8% (412 checks) — BREACH target 99.9% (short 0.1pp)
+  localhost-ssh: 100.0% (412 checks) — no target
+1 breach: example
+```
+
 ## Tests
 
 ```sh
@@ -212,8 +253,23 @@ make test   # python3 -m unittest discover -s tests -v
   live status, uptime, latency, and last check per endpoint as
   JSON, so scripts and other tools can consume it without scraping
   the HTML — done in 0.12.0.
+- [x] SLA reporting: per-endpoint `sla_target` in the config, and
+  `--sla-report [YYYY-MM]` prints a calendar month's uptime per
+  endpoint against its target, with the breach list — done in
+  0.13.0.
 
 ## Changelog
+
+- **0.13.0** — SLA reporting: an endpoint can declare
+  `sla_target` (a percentage, e.g. 99.9) in the config, and
+  `--sla-report [YYYY-MM]` prints that calendar month's uptime
+  per endpoint against its target, with a breach list (worst
+  shortfall first, in percentage points). Skipped checks,
+  unconfirmed failures below the flap threshold, and maintenance
+  rounds are excluded, like everywhere else; a month with no
+  counted checks reports "no data" and is not a breach. Bad
+  targets (not a number, ≤ 0, or > 100) are rejected at config
+  load. With no month given, the current month is used.
 
 - **0.12.0** — JSON API for the dashboard: `GET /api/status`
   returns `{"generated_at", "endpoints": [...]}` with one object per
