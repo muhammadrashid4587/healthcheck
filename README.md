@@ -35,6 +35,14 @@ endpoint, and serves a small status dashboard over `http.server`.
   `--status-page-source LABEL=PATH` (repeatable) merges another
   healthcheck instance's persisted history into the same page under
   its own labelled section, with the same rules per source.
+  `LABEL=URL` does the same for a remote instance, scraping its
+  `GET /api/status` over HTTP — no local history file needed for
+  the second target. The remote section shows the remote instance's
+  status and uptime figures (all-time, 24h, 7d) as reported; a
+  snapshot carries no per-check records, so there is no latency
+  sparkline and no incident list for a remote source, and an
+  unreachable instance (or bad JSON) logs a warning and renders
+  empty rather than failing the page.
   An endpoint whose dependency is not up shows SKIPPED, with the
   dependency named — a skip is not downtime.
 - Prometheus metrics export: `GET /metrics` on the dashboard server
@@ -422,11 +430,33 @@ make test   # python3 -m unittest discover -s tests -v
   separately in each. A missing or corrupt second history logs a
   warning and renders empty instead of taking the page down —
   done in 0.20.0.
-- [ ] Next: scrape a remote healthcheck instance's `GET /api/status`
-  over HTTP as a status-page source, so no local history file is
-  needed for the second target.
+- [x] Scrape a remote healthcheck instance's `GET /api/status`
+  over HTTP as a status-page source: `--status-page-source
+  LABEL=URL` fetches the remote instance's status snapshot and
+  renders it as a labelled section with the same status and uptime
+  rules — no local history file needed for the second target. A
+  snapshot has no per-check records, so a remote source has no
+  latency sparkline and no incident list; an unreachable instance
+  or bad JSON logs a warning and renders empty instead of taking
+  the page down — done in 0.21.0.
+- [ ] Next: `status_page_sources` in the config file, so file and
+  remote sources survive without repeating the flag every time.
 
 ## Changelog
+
+- **0.21.0** — Remote status-page source: `--status-page-source
+  LABEL=URL` scrapes a remote healthcheck instance's `GET
+  /api/status` over HTTP and renders it as a labelled section of
+  the static status page, with the same status, uptime 24h/7d and
+  banner rules per source — no local history file needed for the
+  second target. `ApiStatusHistory` wraps the snapshot so the
+  existing page renderer judges it like a local source; a snapshot
+  carries no per-check records, so a remote source shows no
+  latency sparkline and no incident list (none is invented from a
+  single sample). An unreachable instance, a non-200 response,
+  bad JSON, or a payload that is not a status snapshot logs a
+  warning and renders the section empty instead of failing the
+  page; a URL already ending in `/api/status` is used as-is.
 
 - **0.20.0** — Second scrape target for the static status page:
   `--status-page-source LABEL=PATH` (repeatable) merges another

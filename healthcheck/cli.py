@@ -30,6 +30,7 @@ from .digest import DigestAlerter, validate_digest_config
 from .flap import DEFAULT_THRESHOLD, FlapDetector, validate_threshold
 from .maintenance import (active_window, summarize_window,
                           validate_maintenance_windows)
+from .remote import fetch_remote_status
 from .server import serve
 from .sla import (parse_month, render_sla_report, sla_report,
                   validate_sla_targets)
@@ -222,10 +223,12 @@ def parse_status_page_source(spec):
     """Parse a --status-page-source LABEL=PATH spec.
 
     The label names the second source in the generated status page,
-    so its endpoints are attributed to it; the path is another
-    healthcheck instance's persisted history file. A spec without
-    '=' is rejected — a bare path has no label to attribute its
-    endpoints to. Raises ValueError with a clear message.
+    so its endpoints are attributed to it; the value is another
+    healthcheck instance's persisted history file, or an http(s)
+    URL for a remote instance, whose GET /api/status is scraped
+    instead (see fetch_remote_status). A spec without '=' is
+    rejected — a bare path has no label to attribute its endpoints
+    to. Raises ValueError with a clear message.
     """
     if "=" not in spec:
         raise ValueError(
@@ -592,9 +595,11 @@ def main(argv=None):
     parser.add_argument("--status-page-source", default=None,
                         action="append", metavar="LABEL=PATH",
                         help="merge another healthcheck instance's "
-                             "persisted history file into the static "
-                             "status page as an extra source, labelled "
-                             "LABEL in the page (repeatable; needs "
+                             "persisted history file (or its GET "
+                             "/api/status, when the value is an "
+                             "http(s) URL) into the static status page "
+                             "as an extra source, labelled LABEL in "
+                             "the page (repeatable; needs "
                              "--status-page)")
     parser.add_argument("--sla-report", default=None, nargs="?",
                         const="current", metavar="YYYY-MM",
@@ -635,19 +640,34 @@ def main(argv=None):
         extra_sources = []
         for spec in args.status_page_source or []:
             try:
-                label, src_path = parse_status_page_source(spec)
+                label, src = parse_status_page_source(spec)
             except ValueError as exc:
                 parser.error(str(exc))
-            # A missing or corrupt second history logs a warning and
-            # renders empty, like the primary one — a bad second
-            # source must never take down the whole page.
-            src_history = load_history(src_path,
-                                       maxlen=cfg.get("history", 100))
-            src_endpoints = [{"name": name}
-                             for name in src_history.names()]
+            if src.startswith(("http://", "https://")):
+                # A remote instance: scrape its GET /api/status.
+                # Unreachable or bad data logs a warning and
+                # renders empty, like a missing history file — a
+                # bad second source must never take down the page.
+                src_history = fetch_remote_status(src)
+                if src_history is None:
+                    src_history = History(maxlen=cfg.get("history", 100))
+                src_endpoints = [{"name": name}
+                                 for name in src_history.names()]
+                log.info("status page source %r fetched from %s "
+                         "(%d endpoints)", label, src,
+                         len(src_endpoints))
+            else:
+                # A missing or corrupt second history logs a warning
+                # and renders empty, like the primary one — a bad
+                # second source must never take down the whole page.
+                src_history = load_history(src,
+                                           maxlen=cfg.get("history", 100))
+                src_endpoints = [{"name": name}
+                                 for name in src_history.names()]
+                log.info("status page source %r loaded from %s "
+                         "(%d endpoints)", label, src,
+                         len(src_endpoints))
             extra_sources.append((label, src_history, src_endpoints))
-            log.info("status page source %r loaded from %s "
-                     "(%d endpoints)", label, src_path, len(src_endpoints))
         write_status_page(history, cfg.get("endpoints", []),
                           args.status_page,
                           extra_sources=extra_sources or None)
