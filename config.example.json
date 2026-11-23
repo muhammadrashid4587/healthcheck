@@ -1,21 +1,21 @@
 {
   "endpoints": [
     {
-      "name": "example",
-      "timeout": 5,
-      "type": "http",
-      "url": "https://example.com",
       "expect_status": 200,
-      "max_latency_ms": 500,
-      "webhook": "https://hooks.example.com/example",
-      "sla_target": 99.9,
       "maintenance_windows": [
         {
           "days": "sat",
-          "start": "02:00",
-          "end": "04:00"
+          "end": "04:00",
+          "start": "02:00"
         }
-      ]
+      ],
+      "max_latency_ms": 500,
+      "name": "example",
+      "sla_target": 99.9,
+      "timeout": 5,
+      "type": "http",
+      "url": "https://example.com",
+      "webhook": "https://hooks.example.com/example"
     },
     {
       "host": "127.0.0.1",
@@ -25,6 +25,7 @@
       "type": "tcp"
     },
     {
+      "check_interval_s": 120,
       "depends_on": "example",
       "name": "example-api",
       "timeout": 5,

@@ -57,6 +57,7 @@ def load_config(path):
     validate_body_assertions(endpoints)
     validate_expect_status(endpoints)
     validate_latency_budgets(endpoints)
+    validate_check_intervals(endpoints)
     validate_maintenance_windows(endpoints)
     validate_sla_targets(endpoints)
     validate_endpoint_webhooks(endpoints)
@@ -246,6 +247,93 @@ def validate_endpoint_webhooks(endpoints):
             raise ValueError(
                 f"endpoint {ep['name']!r}: webhook must be an "
                 f"http(s) URL, not {url!r}")
+
+
+def validate_check_intervals(endpoints):
+    """Reject bad `check_interval_s` entries at config load.
+
+    An endpoint may define its own check interval in seconds: it
+    is checked on its own cadence instead of the global
+    `interval_seconds`. Any endpoint type can set one, and the
+    value must be a positive number (an integer or a float, not a
+    bool, not a string). Raises ValueError with a clear message;
+    the monitor refuses to start rather than run with an interval
+    it can never schedule.
+    """
+    for ep in endpoints:
+        value = ep.get("check_interval_s")
+        if value is None:
+            continue
+        if (isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or value <= 0):
+            raise ValueError(
+                f"endpoint {ep['name']!r}: check_interval_s must be a "
+                f"positive number of seconds, not {value!r}")
+
+
+def endpoint_interval(cfg, ep):
+    """Seconds between checks of one endpoint: its own
+    `check_interval_s` when set, else the global `interval_seconds`
+    (default 30)."""
+    value = ep.get("check_interval_s")
+    if value is not None:
+        return value
+    return cfg.get("interval_seconds", 30)
+
+
+def parse_check_interval(spec):
+    """Parse a --check-interval NAME=SECONDS spec.
+
+    The name is an endpoint in the config; the interval is how many
+    seconds pass between that endpoint's checks. A spec without '=',
+    an empty name, or an interval that is not a positive number is
+    rejected. Raises ValueError with a clear message.
+    """
+    if "=" not in spec:
+        raise ValueError(
+            f"--check-interval needs NAME=SECONDS, got {spec!r}")
+    name, interval = spec.split("=", 1)
+    name = name.strip()
+    interval = interval.strip()
+    if not name or not interval:
+        raise ValueError(
+            f"--check-interval needs a non-empty name and interval, "
+            f"got {spec!r}")
+    try:
+        value = float(interval)
+    except ValueError:
+        raise ValueError(
+            f"--check-interval interval must be a number, got "
+            f"{interval!r}") from None
+    if value <= 0:
+        raise ValueError(
+            f"--check-interval interval must be a positive number of "
+            f"seconds, got {interval!r}")
+    return name, value
+
+
+def apply_check_interval_overrides(cfg, args):
+    """Apply --check-interval flags to the config's endpoints.
+
+    Each flag sets (or replaces) the endpoint's `check_interval_s` —
+    the flag wins over the config file, like --flap-threshold and
+    --webhook-url do for their settings. A flag naming an endpoint
+    that is not in the config is rejected, so a typo does not
+    silently do nothing. `args` may be a namespace without the
+    attribute (tests build their own) — then there is nothing to
+    apply. Raises ValueError with a clear message.
+    """
+    specs = getattr(args, "check_interval", None) or []
+    if not specs:
+        return
+    by_name = {ep["name"]: ep for ep in cfg.get("endpoints", [])}
+    for spec in specs:
+        name, value = parse_check_interval(spec)
+        if name not in by_name:
+            raise ValueError(
+                f"--check-interval names unknown endpoint {name!r}")
+        by_name[name]["check_interval_s"] = value
 
 
 def validate_expect_status(endpoints):
@@ -649,8 +737,17 @@ def _dependency_state(name, results, history):
 
 
 def check_all(endpoints, history, timeout=5.0, alerter=None,
-              flap_detector=None, now=None):
+              flap_detector=None, now=None, only=None):
     """One check round over all endpoints, dependencies first.
+
+    `only`, when given, is a set of endpoint names to check this
+    round: the others are not touched at all — no check runs, no
+    history is recorded — so the monitor loop can check each
+    endpoint on its own `check_interval_s` cadence while the rest
+    wait. A dependent that is due while its dependency is not due
+    this round is still judged: `_dependency_state` falls back to
+    the dependency's last recorded check, so a down dependency
+    still skips it and a recovered one lets it run.
 
     An endpoint inside a maintenance window is not checked at all:
     the round is recorded as maintenance, so the dashboard shows
@@ -679,7 +776,10 @@ def check_all(endpoints, history, timeout=5.0, alerter=None,
     if flap_detector is None:
         flap_detector = FlapDetector()
     results = {}
-    for ep in check_order(endpoints):
+    ordered = check_order(endpoints)
+    if only is not None:
+        ordered = [ep for ep in ordered if ep["name"] in only]
+    for ep in ordered:
         name = ep["name"]
         window = active_window(ep.get("maintenance_windows"), now)
         if window is not None:
@@ -873,6 +973,16 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
     `max_rounds` caps the loop for tests; production runs pass None
     and stop only on Ctrl-C. The digest window resets on a reload,
     like flap state: the new alerter starts a fresh window.
+
+    Each endpoint is checked on its own cadence: an endpoint with
+    `check_interval_s` is checked that often, and one without it
+    falls back to the global `interval_seconds` (see
+    `endpoint_interval`). The loop sleeps until the next endpoint
+    is due, so a fast endpoint does not wait on a slow one and a
+    slow one is not checked every round — a round here is one pass
+    over whichever endpoints are due, and `max_rounds` counts
+    those passes. A reload resets every endpoint to due, so new
+    endpoints (and new intervals) are picked up on the next pass.
     """
     state_cfg = cfg
     endpoints = list(cfg.get("endpoints", []))
@@ -885,6 +995,9 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
         live_endpoints[:] = endpoints
     if live_sources is not None:
         live_sources[:] = merged_status_page_sources(cfg, args)
+    # Epoch seconds each endpoint is next due a check; 0 means due
+    # immediately, so the first pass checks everything.
+    next_due = {ep["name"]: 0.0 for ep in endpoints}
     rounds = 0
     while not stop.is_set():
         if reload_requested is not None and reload_requested.is_set():
@@ -895,6 +1008,7 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
                     try:
                         apply_expect_status_overrides(new_cfg, args)
                         apply_max_latency_overrides(new_cfg, args)
+                        apply_check_interval_overrides(new_cfg, args)
                     except ValueError as exc:
                         # A flag naming an endpoint the reloaded file
                         # dropped: keep the running config, like a
@@ -911,6 +1025,9 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
                     alerter = make_alerter(new_cfg, args)
                     detector = FlapDetector(flap_threshold(new_cfg, args))
                     state_cfg = new_cfg
+                    # New endpoints and new intervals apply from the
+                    # next pass: everything is due right away.
+                    next_due = {ep["name"]: 0.0 for ep in endpoints}
                     if live_endpoints is not None:
                         live_endpoints[:] = endpoints
                     if live_sources is not None:
@@ -923,26 +1040,44 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
                         sorted(new_names - old_names) or "none",
                         sorted(old_names - new_names) or "none",
                         interval)
-        check_all(endpoints, history, alerter=alerter,
-                  flap_detector=detector)
-        if isinstance(alerter, DigestAlerter):
-            # The digest window advances on its own interval; an
-            # empty window sends nothing. When no SMTP host is
-            # configured, the rendered email body goes to the log —
-            # that is where an operator picks it up (or pipes it to
-            # sendmail); when SMTP delivery ran, success or failure
-            # is already logged by the sender.
-            current_down = [ep["name"] for ep in endpoints
-                            if detector.is_down(ep["name"])]
-            sent = alerter.maybe_send(current_down=current_down)
-            if (sent is not None and sent["email"]
-                    and sent["email_ok"] is None):
-                log.info("alert digest email:\n%s", sent["email"])
-        save_history(history, path)
-        rounds += 1
-        if max_rounds is not None and rounds >= max_rounds:
-            break
-        stop.wait(interval)
+        now = time.time()
+        due = {ep["name"] for ep in endpoints
+               if next_due.get(ep["name"], 0.0) <= now}
+        if due:
+            check_all(endpoints, history, alerter=alerter,
+                      flap_detector=detector, only=due)
+            checked_at = time.time()
+            for name in due:
+                ep = next(ep for ep in endpoints
+                          if ep["name"] == name)
+                next_due[name] = (checked_at
+                                  + endpoint_interval(state_cfg, ep))
+            if isinstance(alerter, DigestAlerter):
+                # The digest window advances on its own interval; an
+                # empty window sends nothing. When no SMTP host is
+                # configured, the rendered email body goes to the log —
+                # that is where an operator picks it up (or pipes it to
+                # sendmail); when SMTP delivery ran, success or failure
+                # is already logged by the sender.
+                current_down = [ep["name"] for ep in endpoints
+                                if detector.is_down(ep["name"])]
+                sent = alerter.maybe_send(current_down=current_down)
+                if (sent is not None and sent["email"]
+                        and sent["email_ok"] is None):
+                    log.info("alert digest email:\n%s", sent["email"])
+            save_history(history, path)
+            rounds += 1
+            if max_rounds is not None and rounds >= max_rounds:
+                break
+        # Sleep until the next endpoint is due; with no endpoints
+        # at all, wake on the global interval so a reload that
+        # adds one is picked up promptly.
+        if endpoints:
+            wait = max(0.0, min(next_due.get(ep["name"], 0.0)
+                                for ep in endpoints) - time.time())
+        else:
+            wait = interval
+        stop.wait(wait)
     return state_cfg
 
 
@@ -1028,6 +1163,13 @@ def main(argv=None):
                              "latency exceeds MS milliseconds (overrides "
                              "the config file's max_latency_ms for that "
                              "endpoint; repeatable)")
+    parser.add_argument("--check-interval", default=None,
+                        action="append", metavar="NAME=SECONDS",
+                        help="check the named endpoint every SECONDS "
+                             "seconds instead of the global "
+                             "interval_seconds (overrides the config "
+                             "file's check_interval_s for that "
+                             "endpoint; repeatable)")
     parser.add_argument("--status-page", default=None, metavar="PATH",
                         help="write a self-contained static HTML status "
                              "page from the persisted check history to "
@@ -1057,6 +1199,7 @@ def main(argv=None):
     try:
         apply_expect_status_overrides(cfg, args)
         apply_max_latency_overrides(cfg, args)
+        apply_check_interval_overrides(cfg, args)
     except ValueError as exc:
         parser.error(str(exc))
     history = None

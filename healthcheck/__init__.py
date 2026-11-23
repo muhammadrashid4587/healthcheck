@@ -7,16 +7,17 @@ when an endpoint changes state, or a periodic digest that batches
 the changes into one summary (webhook and/or a rendered email body).
 """
 
-__version__ = "0.26.0"
+__version__ = "0.27.0"
 
 from .checker import (CheckResult, check_endpoint, check_http, check_tcp,
                       maintenance_result)
-from .cli import (apply_max_latency_overrides, dry_run_check,
-                  format_check_line, install_reload_handler,
-                  load_status_page_source, merged_status_page_sources,
-                  monitor_loop, parse_max_latency, reload_config,
-                  select_check_targets, validate_latency_budgets,
-                  validate_status_page_sources)
+from .cli import (apply_check_interval_overrides, apply_max_latency_overrides,
+                  dry_run_check, endpoint_interval, format_check_line,
+                  install_reload_handler, load_status_page_source,
+                  merged_status_page_sources, monitor_loop,
+                  parse_check_interval, parse_max_latency, reload_config,
+                  select_check_targets, validate_check_intervals,
+                  validate_latency_budgets, validate_status_page_sources)
 from .digest import (DEFAULT_DIGEST_INTERVAL_SECONDS, DigestAlerter,
                      build_digest, render_digest_email,
                      resolve_smtp_config, send_digest_email,
@@ -42,6 +43,7 @@ __all__ = [
     "DEFAULT_THRESHOLD",
     "History",
     "active_window",
+    "apply_check_interval_overrides",
     "apply_max_latency_overrides",
     "breaches",
     "build_digest",
@@ -49,6 +51,7 @@ __all__ = [
     "check_http",
     "check_tcp",
     "dry_run_check",
+    "endpoint_interval",
     "endpoint_status",
     "fetch_remote_status",
     "format_check_line",
@@ -59,6 +62,7 @@ __all__ = [
     "merged_status_page_sources",
     "monitor_loop",
     "monthly_uptime",
+    "parse_check_interval",
     "parse_max_latency",
     "parse_month",
     "recent_incidents",
@@ -74,6 +78,7 @@ __all__ = [
     "sla_report",
     "status_snapshot",
     "summarize_windows",
+    "validate_check_intervals",
     "validate_digest_config",
     "validate_latency_budgets",
     "validate_sla_targets",

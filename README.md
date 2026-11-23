@@ -44,6 +44,20 @@ endpoint, and serves a small status dashboard over `http.server`.
   from a deploy script or CI. A single failed check is DOWN here:
   the flap threshold needs repeated rounds and does not apply to
   a one-shot pass.
+- Per-endpoint check intervals (`check_interval_s`): an endpoint
+  can define its own cadence (e.g. every 10 s for a flaky
+  dependency, every 10 minutes for a slow-changing page) instead
+  of the global `interval_seconds`. The scheduler checks each
+  endpoint when it is due and sleeps until the next one is, so a
+  fast endpoint does not wait on a slow one and a slow one is not
+  checked every round. Set in the config file or with
+  `--check-interval NAME=SECONDS` (repeatable, flag wins); a bad
+  value is rejected at config load, and a SIGHUP reload picks up
+  changes. A dependent that is due while its dependency is not
+  due this round is still judged against the dependency's last
+  recorded check. The dashboard gains a Check every column and
+  `GET /api/status` gains `check_interval_s` per endpoint (or
+  `null` when the endpoint uses the global interval).
 - TCP connect checks for services without HTTP.
 - Per-endpoint uptime % and recent check history.
 - Flap detection: an endpoint only flips to DOWN (and only alerts)
@@ -98,7 +112,8 @@ endpoint, and serves a small status dashboard over `http.server`.
   that fell short, and by how many percentage points.
 - Config hot-reload: while the monitor is running, edit
   `config.json` and send SIGHUP (`kill -HUP <pid>`); the new
-  endpoints, check interval, webhook, flap threshold, and status
+  endpoints, check interval, per-endpoint check intervals,
+  webhook, flap threshold, and status
   page sources take effect before the next check round, and the
   dashboard follows.
   A bad edit never takes the monitor down — it is logged and the
@@ -178,9 +193,10 @@ While the monitor is running, edit the config file and send
 SIGHUP to reload it without restarting:
 
 ```sh
-kill -HUP <pid>   # new endpoints, interval, webhook, flap
-                  # threshold, and status page sources apply
-                  # before the next check round
+kill -HUP <pid>   # new endpoints, interval, per-endpoint check
+                  # intervals, webhook, flap threshold, and
+                  # status page sources apply before the next
+                  # check round
 ```
 
 The reloaded config is validated the same way as at startup: a
@@ -215,6 +231,19 @@ normally without it.
 ```
 
 - `interval_seconds` — seconds between check rounds (default 30).
+- `check_interval_s` — seconds between checks of one endpoint
+  (optional, either type, e.g. `60`): the endpoint is checked on
+  its own cadence instead of the global `interval_seconds`, which
+  stays the default for endpoints without one. The scheduler
+  checks each endpoint when it is due and sleeps until the next
+  one is due, so a fast endpoint is not held back by a slow one.
+  Must be a positive number (an integer or a float); a bad value
+  is rejected at config load. The `--check-interval NAME=SECONDS`
+  flag (repeatable) sets or replaces it for one endpoint, and the
+  flag wins over the config file; a flag naming an endpoint that
+  is not in the config is rejected. A SIGHUP reload picks up
+  `check_interval_s` changes from the edited file (a bad value
+  keeps the running config), and re-applies the flags.
 - `flap_threshold` — consecutive failed checks that confirm an
   outage (default 3). A failure below the threshold is recorded but
   unconfirmed: no alert, no uptime penalty, and the endpoint stays
@@ -394,7 +423,9 @@ recorded history, uptime %
 over the last 24 hours and the last 7 days (a `-` when no checks fall
 in that window — no data is not downtime), most recent
 latency, the endpoint's latency budget (`max_latency_ms`, or `-`
-when it has none), a latency p50 / p95 / p99 column (nearest-rank percentiles
+when it has none), the endpoint's own check interval
+(`check_interval_s`, or `-` when it uses the global interval),
+a latency p50 / p95 / p99 column (nearest-rank percentiles
 over the last 24 hours, `-` when no checks ran in that window), a sparkline
 of the last 20 recorded latencies, the error string of the endpoint's
 most recent failed check (the Last error column, `-` when it never
@@ -419,6 +450,8 @@ returned), `uptime_pct`, `uptime_24h_pct`, `uptime_7d_pct` (`null` when
 no checks fall in that window), `latency_ms` (most recent, or `null`),
 `max_latency_ms` (the latency budget in ms the endpoint must answer
 within, or `null` when it has none),
+`check_interval_s` (the endpoint's own check interval in seconds,
+or `null` when it uses the global `interval_seconds`),
 `latency_percentiles` (`{"p50", "p95", "p99"}` in ms over the
 last 24 hours, or `null` when no checks ran in that window),
 `last_error` (the error string of the most recent failed check
@@ -604,8 +637,37 @@ make test   # python3 -m unittest discover -s tests -v
   error column (HTML-escaped, `-` when the endpoint never failed)
   and `GET /api/status` gains `last_error` per endpoint — done
   in 0.26.0.
+- [x] Per-endpoint check intervals (`check_interval_s`): an
+  endpoint can define its own check cadence in seconds instead of
+  the global `interval_seconds`, which stays the default for
+  endpoints without one. The scheduler checks each endpoint when
+  it is due and sleeps until the next one is due, so a fast
+  endpoint does not wait on a slow one; a dependent due while its
+  dependency is not due this round is judged against the
+  dependency's last recorded check. Set in the config file or
+  with `--check-interval NAME=SECONDS` (repeatable, flag wins),
+  validated at load and on SIGHUP reload; the dashboard gains a
+  Check every column and `GET /api/status` gains
+  `check_interval_s` per endpoint — done in 0.27.0.
 
 ## Changelog
+
+- **0.27.0** — Per-endpoint check intervals: an endpoint can set
+  `check_interval_s` (e.g. 60) in the config, and it is checked
+  on its own cadence instead of the global `interval_seconds`
+  (which stays the default for endpoints without one). The
+  scheduler tracks when each endpoint is next due and sleeps
+  until the next one, so a fast endpoint does not wait on a slow
+  one and a slow one is not checked every round. A dependent that
+  is due while its dependency is not due this round is judged
+  against the dependency's last recorded check, so a down
+  dependency still skips it. `--check-interval NAME=SECONDS`
+  (repeatable) sets or replaces it for one endpoint and wins over
+  the config file; a bad value is rejected at config load, and a
+  SIGHUP reload picks up changes (a bad edit keeps the running
+  config). The dashboard gains a Check every column and `GET
+  /api/status` gains `check_interval_s` per endpoint (`null`
+  when the endpoint uses the global interval).
 
 - **0.26.0** — Last error per endpoint: the dashboard gains a
   Last error column showing the error string of the endpoint's
