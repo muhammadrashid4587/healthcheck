@@ -11,6 +11,9 @@ endpoint, and serves a small status dashboard over `http.server`.
 
 - A monitor for a handful of your own services, running on one box.
 - HTTP checks (ok on 2xx/3xx, with status code and latency recorded).
+  An `http` endpoint can also assert on the response body
+  (`expect_body` substring, `expect_body_regex` pattern): a 200
+  that serves an error page is not "up".
 - TCP connect checks for services without HTTP.
 - Per-endpoint uptime % and recent check history.
 - Flap detection: an endpoint only flips to DOWN (and only alerts)
@@ -81,6 +84,14 @@ python3 -m healthcheck.cli --config config.json --once
   flap detection, the alert fires only when the outage is confirmed
   (see `flap_threshold` above), not on a single failed check.
 - `http` endpoint — `url` required; ok on status 200–399.
+  `expect_body` is a substring the response body must contain and
+  `expect_body_regex` a regex it must match; when both are set,
+  both must hold. A 200 whose body fails the assertion is DOWN,
+  with the failed assertion named in the error. The body is only
+  read when an assertion is configured, and at most 1 MiB of it.
+  A bad regex, a non-string value, or either key on a `tcp`
+  endpoint is rejected at config load. A 4xx/5xx status is already
+  DOWN, so no assertion runs there.
   `cafile`, `cert`, and `key` are optional: `cafile` is a PEM bundle
   of certificate authorities to trust for an `https://` endpoint
   (for a private or self-signed CA); `cert` and `key` are a client
@@ -133,8 +144,19 @@ make test   # python3 -m unittest discover -s tests -v
   in 0.7.0.
 - [x] Flap detection: only alert after N consecutive failures, so a
   single blip does not page anyone — done in 0.8.0.
+- [x] Response-body assertions for HTTP endpoints
+  (`expect_body`, `expect_body_regex`) — done in 0.9.0.
 
 ## Changelog
+
+- **0.9.0** — Response-body assertions: an `http` endpoint can
+  require the body to contain a substring (`expect_body`) or match
+  a regex (`expect_body_regex`); a 200 that serves an error page is
+  now DOWN, with the failed assertion named in the error. The body
+  is only read when an assertion is configured (at most 1 MiB),
+  non-UTF-8 bodies decode leniently instead of crashing, and a bad
+  regex, a non-string value, or either key on a `tcp` endpoint is
+  rejected at config load.
 
 - **0.8.0** — Flap detection: an endpoint only counts as DOWN (and
   only alerts) after `flap_threshold` consecutive failed checks

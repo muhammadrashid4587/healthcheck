@@ -6,12 +6,17 @@ raises for a failed endpoint — failure is data, not an exception.
 
 from __future__ import annotations
 
+import re
 import socket
 import ssl
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+
+# Most body assertions target small status pages; never read more
+# than this per check, so a huge response cannot stall the monitor.
+MAX_BODY_BYTES = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -58,13 +63,57 @@ def build_tls_context(cafile=None, cert=None, key=None):
     return context
 
 
-def check_http(name, url, timeout=5.0, cafile=None, cert=None, key=None):
+def _check_body(name, body, latency, status, expect_body,
+                  expect_body_regex):
+    """Apply body assertions to a response that already had a good
+    status. Returns a CheckResult: ok when every configured
+    assertion holds, otherwise a failure naming the one that did
+    not. `body` is raw bytes; it is decoded leniently, so a
+    non-UTF-8 response fails the assertion instead of crashing the
+    check. An uncompilable regex is a failed check, not a crash —
+    config load rejects bad patterns first, but check_http must
+    stay safe when called directly.
+    """
+    text = body.decode("utf-8", errors="replace")
+    if expect_body is not None and expect_body not in text:
+        return CheckResult(
+            name=name, ok=False, latency_ms=latency, status_code=status,
+            error=f"body does not contain {expect_body!r}",
+            checked_at=time.time())
+    if expect_body_regex is not None:
+        try:
+            pattern = re.compile(expect_body_regex)
+        except re.error as exc:
+            return CheckResult(
+                name=name, ok=False, latency_ms=latency,
+                status_code=status,
+                error=f"invalid expect_body_regex {expect_body_regex!r}: {exc}",
+                checked_at=time.time())
+        if not pattern.search(text):
+            return CheckResult(
+                name=name, ok=False, latency_ms=latency,
+                status_code=status,
+                error=f"body does not match {expect_body_regex!r}",
+                checked_at=time.time())
+    return CheckResult(name=name, ok=True, latency_ms=latency,
+                       status_code=status, checked_at=time.time())
+
+
+def check_http(name, url, timeout=5.0, cafile=None, cert=None, key=None,
+               expect_body=None, expect_body_regex=None):
     """GET url; ok when the status is 2xx or 3xx.
 
     For https:// URLs, `cafile`/`cert`/`key` select a custom TLS
     context (see build_tls_context); without them the default context
     verifies against the system CA store. The options are ignored for
     plain http:// URLs. A bad cert file is a failed check, not a crash.
+
+    `expect_body` is a substring the response body must contain and
+    `expect_body_regex` a pattern it must match — a 200 that serves
+    an error page is not "up". Either may be given, and when both
+    are, both must hold. The body is only read when an assertion is
+    configured, and never more than MAX_BODY_BYTES of it. A failed
+    status (4xx/5xx) is already not ok, so no assertion runs there.
     """
     started = time.monotonic()
     try:
@@ -75,11 +124,19 @@ def check_http(name, url, timeout=5.0, cafile=None, cert=None, key=None):
         with urllib.request.urlopen(url, timeout=timeout,
                                     context=context) as resp:
             status = resp.status
-            resp.read(1)  # make sure the response actually arrived
+            body = (resp.read(MAX_BODY_BYTES + 1)
+                    if expect_body is not None
+                    or expect_body_regex is not None else resp.read(1))
         latency = (time.monotonic() - started) * 1000
-        return CheckResult(name=name, ok=200 <= status < 400,
-                           latency_ms=latency, status_code=status,
-                           checked_at=time.time())
+        if not 200 <= status < 400:
+            return CheckResult(name=name, ok=False, latency_ms=latency,
+                               status_code=status, error=f"HTTP {status}",
+                               checked_at=time.time())
+        if expect_body is not None or expect_body_regex is not None:
+            return _check_body(name, body, latency, status,
+                               expect_body, expect_body_regex)
+        return CheckResult(name=name, ok=True, latency_ms=latency,
+                           status_code=status, checked_at=time.time())
     except urllib.error.HTTPError as exc:
         latency = (time.monotonic() - started) * 1000
         return CheckResult(name=name, ok=False, latency_ms=latency,
@@ -116,5 +173,7 @@ def check_endpoint(endpoint, timeout=5.0):
         return check_http(name, endpoint["url"], timeout,
                           cafile=endpoint.get("cafile"),
                           cert=endpoint.get("cert"),
-                          key=endpoint.get("key"))
+                          key=endpoint.get("key"),
+                          expect_body=endpoint.get("expect_body"),
+                          expect_body_regex=endpoint.get("expect_body_regex"))
     raise ValueError(f"unknown endpoint type: {kind!r}")

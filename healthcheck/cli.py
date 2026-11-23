@@ -12,6 +12,7 @@ import argparse
 import dataclasses
 import json
 import logging
+import re
 import threading
 import time
 
@@ -38,9 +39,40 @@ def load_config(path):
         if ep["type"] == "tcp" and ("host" not in ep or "port" not in ep):
             raise ValueError(f"tcp endpoint missing host/port: {ep!r}")
     validate_dependencies(endpoints)
+    validate_body_assertions(endpoints)
     if "flap_threshold" in cfg:
         validate_threshold(cfg["flap_threshold"])
     return cfg
+
+
+def validate_body_assertions(endpoints):
+    """Reject bad `expect_body` / `expect_body_regex` entries at
+    config load. Body assertions only apply to http endpoints; a
+    pattern that does not compile is rejected here rather than
+    failing every check round. Raises ValueError with a clear
+    message; the monitor refuses to start rather than run with a
+    check it can never pass.
+    """
+    for ep in endpoints:
+        for key in ("expect_body", "expect_body_regex"):
+            if key not in ep:
+                continue
+            if ep["type"] != "http":
+                raise ValueError(
+                    f"endpoint {ep['name']!r}: {key} only applies to "
+                    f"http endpoints")
+            if not isinstance(ep[key], str):
+                raise ValueError(
+                    f"endpoint {ep['name']!r}: {key} must be a string, "
+                    f"not {ep[key]!r}")
+        pattern = ep.get("expect_body_regex")
+        if pattern is not None:
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(
+                    f"endpoint {ep['name']!r}: expect_body_regex "
+                    f"{pattern!r} does not compile: {exc}")
 
 
 def validate_dependencies(endpoints):
