@@ -7,13 +7,14 @@ when an endpoint changes state, or a periodic digest that batches
 the changes into one summary (webhook and/or a rendered email body).
 """
 
-__version__ = "0.15.0"
+__version__ = "0.16.0"
 
 from .checker import (CheckResult, check_endpoint, check_http, check_tcp,
                       maintenance_result)
 from .cli import (install_reload_handler, monitor_loop, reload_config)
 from .digest import (DEFAULT_DIGEST_INTERVAL_SECONDS, DigestAlerter,
                      build_digest, render_digest_email,
+                     resolve_smtp_config, send_digest_email,
                      validate_digest_config)
 from .flap import DEFAULT_THRESHOLD, FlapDetector, FlapOutcome
 from .maintenance import (active_window, in_maintenance, summarize_windows,
@@ -51,7 +52,9 @@ __all__ = [
     "render_digest_email",
     "render_sla_report",
     "render_status_page",
+    "resolve_smtp_config",
     "latency_sparkline",
+    "send_digest_email",
     "sla_report",
     "status_snapshot",
     "summarize_windows",

@@ -56,15 +56,18 @@ endpoint, and serves a small status dashboard over `http.server`.
   into a periodic summary (default every 15 minutes) — the changes
   in the window, the endpoints currently down, and any endpoints
   that flapped — POSTed as JSON to a webhook URL and/or rendered
-  as a plain-text MIME email message (logged, not sent — SMTP
-  delivery is not wired up yet).
+  as a plain-text MIME email message and delivered over SMTP
+  (STARTTLS by default, implicit TLS on port 465) when an SMTP
+  host is configured; with no SMTP host the rendered message is
+  logged instead, so an operator can pipe it to sendmail. A
+  failed SMTP delivery is logged and never stops the monitor.
 
 ## What it is not
 
 - Not a replacement for a real observability platform (no metrics
   pipeline, no distributed tracing). Alerts are log lines plus an
   optional per-change webhook and/or a periodic digest — the digest
-  can render an email body, but there is no SMTP delivery and no
+  can be POSTed to a webhook and/or emailed over SMTP. There is no
   SMS or PagerDuty.
 - History is in-memory while the process runs, unless `history_file`
   is set (see Config) — then check history is loaded on startup and
@@ -169,10 +172,27 @@ normally without it.
   digest instead of (or in addition to) one webhook per change
   (optional). The block is
   `{"interval_seconds": 900, "webhook_url": "https://hooks.example/digest",
-  "email_to": ["ops@example.com"], "email_from": "monitor@example.com"}`,
+  "email_to": ["ops@example.com"], "email_from": "monitor@example.com",
+  "smtp_host": "mail.example.com", "smtp_port": 587,
+  "smtp_user": "monitor", "smtp_password": "s3cret",
+  "smtp_starttls": true}`,
   where `interval_seconds` defaults to 900 (15 minutes) and at
-  least one of `webhook_url` / `email_to` is required. Every
-  interval the monitor sends one JSON payload —
+  least one of `webhook_url` / `email_to` is required. The SMTP
+  keys are optional: `smtp_host` is the mail server, `smtp_port`
+  defaults to 587, `smtp_user` / `smtp_password` are only used
+  when a login is needed, and `smtp_starttls` defaults to true —
+  the connection is upgraded with STARTTLS (port 465 always uses
+  implicit TLS instead, no STARTTLS upgrade). Put credentials in
+  the environment, not the config file: `HEALTHCHECK_SMTP_HOST`,
+  `HEALTHCHECK_SMTP_PORT`, `HEALTHCHECK_SMTP_USER`,
+  `HEALTHCHECK_SMTP_PASSWORD`, and `HEALTHCHECK_SMTP_STARTTLS`
+  override the config keys when set. With no SMTP host configured
+  anywhere, the digest email is only rendered and written to the
+  log, so an operator can pick it up there or pipe it to sendmail.
+  A failed SMTP delivery is logged as a warning and never stops
+  the monitor, and the digest window still advances — a failed
+  digest is not re-sent. Every interval the monitor sends one JSON
+  payload —
   `{"type": "digest", "window_start", "window_end", "changes",
   "currently_down", "flapping", "summary"}` — with the confirmed
   changes in that window only (a change outside the window belongs
@@ -183,14 +203,14 @@ normally without it.
   with no changes but something still down still goes out, so an
   ongoing outage is not silent. When `email_to` is set, the same
   digest is rendered as a plain-text MIME message (From/To/Subject
-  plus the changes, currently-down, and flapping lists) and written
-  to the log — SMTP delivery is not wired up yet, so the log is
-  where an operator picks it up, or pipes it to sendmail. A bad
-  digest block (non-object, unknown key, non-positive interval,
-  non-http(s) webhook URL, empty recipient list, no destination at
-  all) is rejected at config load, and on a SIGHUP reload the
-  running config is kept. The digest window resets on a reload,
-  like flap state.
+  plus the changes, currently-down, and flapping lists) and
+  delivered over SMTP when an SMTP host is configured, or written
+  to the log when it is not. A bad digest block (non-object,
+  unknown key, non-positive interval, non-http(s) webhook URL,
+  empty recipient list, no destination at all, bad SMTP port or
+  STARTTLS flag) is rejected at config load, and on a SIGHUP
+  reload the running config is kept. The digest window resets on
+  a reload, like flap state.
 - `sla_target` — an uptime target in percent for the endpoint
   (optional, e.g. `99.9`), used only by the SLA report below.
   Must be a number above 0 and at most 100; a bad value is
@@ -330,11 +350,34 @@ make test   # python3 -m unittest discover -s tests -v
   summary (default every 15 minutes) — the changes in the window,
   the endpoints currently down, and any flapping endpoints —
   POSTed as JSON to a webhook URL and/or rendered as a plain-text
-  MIME email message (logged, not sent; SMTP delivery is a
-  follow-up). An empty window sends nothing; a bad digest config
-  is rejected at load — done in 0.15.0.
+  MIME email message (logged when no SMTP host is configured;
+  SMTP delivery arrived in 0.16.0). An empty window sends
+  nothing; a bad digest config is rejected at load — done in
+  0.15.0.
+- [x] SMTP delivery for the digest email: `smtp_host` /
+  `smtp_port` / `smtp_user` / `smtp_password` / `smtp_starttls`
+  in the `alert_digest` block (or the `HEALTHCHECK_SMTP_*` env
+  vars, which win — credentials belong in the environment, not
+  the config file), STARTTLS by default, implicit TLS on port
+  465, login when a user is set, and a failed delivery is logged
+  and never stops the monitor — done in 0.16.0.
 
 ## Changelog
+
+- **0.16.0** — SMTP delivery for the alert digest email: an
+  `alert_digest` block can now set `smtp_host` (plus optional
+  `smtp_port`, default 587, `smtp_user`, `smtp_password`, and
+  `smtp_starttls`, default true), or the same settings via the
+  `HEALTHCHECK_SMTP_HOST` / `_PORT` / `_USER` / `_PASSWORD` /
+  `_STARTTLS` environment variables, which override the config —
+  credentials belong in the environment, not the config file.
+  Port 465 uses implicit TLS; other ports upgrade with STARTTLS
+  when enabled. The rendered digest is sent with `smtplib` and
+  delivery success or failure is logged; a failed delivery is a
+  warning, never a crash, and the digest window still advances.
+  With no SMTP host configured, the rendered message is still
+  written to the log as before. Bad SMTP values (bad port, bad
+  STARTTLS flag) are rejected at config load.
 
 - **0.15.0** — Alert digest: an `alert_digest` block in the config
   batches confirmed state changes into a periodic summary (default
@@ -342,7 +385,7 @@ make test   # python3 -m unittest discover -s tests -v
   endpoints currently down, and the endpoints that changed state
   three or more times in the window (flapping) — POSTed as JSON to
   a webhook URL and/or rendered as a plain-text MIME email message
-  (written to the log; SMTP delivery is not wired up yet). An
+  (written to the log; SMTP delivery arrived in 0.16.0). An
   empty window sends nothing; a window with no changes but
   something still down still goes out. A bad digest block is
   rejected at config load. Works alongside the per-change webhook,

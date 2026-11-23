@@ -5,9 +5,11 @@ state, a JSON payload is POSTed to the configured webhook URL (see
 `webhook_url` in the config, or --webhook-url). An `alert_digest`
 block in the config batches confirmed changes into a periodic
 digest instead of (or in addition to) one webhook per change — see
-healthcheck.digest. No SMS, and no SMTP delivery yet: a digest
-configured with `email_to` renders a MIME message that is logged,
-not sent.
+healthcheck.digest. No SMS: a digest configured with `email_to`
+renders a MIME message and delivers it over SMTP when `smtp_host`
+is set (or the HEALTHCHECK_SMTP_* env vars); with no SMTP host the
+rendered message is logged instead, so an operator can pipe it to
+sendmail.
 Run it under whatever supervisor you already use and watch the logs.
 """
 
@@ -441,13 +443,16 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
                   flap_detector=detector)
         if isinstance(alerter, DigestAlerter):
             # The digest window advances on its own interval; an
-            # empty window sends nothing. The rendered email body
-            # goes to the log — SMTP delivery is not wired up yet,
-            # so the log is where an operator picks it up.
+            # empty window sends nothing. When no SMTP host is
+            # configured, the rendered email body goes to the log —
+            # that is where an operator picks it up (or pipes it to
+            # sendmail); when SMTP delivery ran, success or failure
+            # is already logged by the sender.
             current_down = [ep["name"] for ep in endpoints
                             if detector.is_down(ep["name"])]
             sent = alerter.maybe_send(current_down=current_down)
-            if sent is not None and sent["email"]:
+            if (sent is not None and sent["email"]
+                    and sent["email_ok"] is None):
                 log.info("alert digest email:\n%s", sent["email"])
         save_history(history, path)
         rounds += 1

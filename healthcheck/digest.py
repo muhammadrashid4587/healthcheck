@@ -6,18 +6,22 @@ and sends one summary: the changes in the window, the endpoints
 currently down, and any endpoints that flapped (changed confirmed
 state three or more times in the window). The digest is POSTed as
 JSON to a webhook URL and/or rendered as a plain-text MIME email
-message.
+message and delivered over SMTP (STARTTLS by default, implicit TLS
+on port 465); with no SMTP host configured the rendered message is
+returned to the caller (the monitor logs it), so it can be piped to
+sendmail.
 
-Pure Python 3 standard library. SMTP delivery is not wired up yet:
-the rendered message is returned to the caller (the monitor logs
-it), so it can be piped to sendmail or handed to an SMTP step later.
-A failed webhook delivery is a warning, never a crash — the monitor
-must keep running even if the webhook is down.
+Pure Python 3 standard library. A failed webhook or SMTP delivery
+is a warning, never a crash — the monitor must keep running even if
+the webhook or the mail server is down.
 """
 
 from __future__ import annotations
 
 import logging
+import os
+import smtplib
+import ssl
 import time
 from email.message import EmailMessage
 
@@ -27,12 +31,154 @@ log = logging.getLogger("healthcheck.digest")
 
 DEFAULT_DIGEST_INTERVAL_SECONDS = 900  # 15 minutes
 DEFAULT_DIGEST_SENDER = "healthcheck@localhost"
+DEFAULT_SMTP_PORT = 587
+# Port 465 is the implicit-TLS submission port: the connection is
+# TLS from the first byte, so no STARTTLS upgrade is attempted.
+IMPLICIT_TLS_SMTP_PORT = 465
+DEFAULT_SMTP_TIMEOUT_SECONDS = 10.0
 # An endpoint that changes confirmed state this many times in one
 # digest window is flapping, not just having a bad day.
 FLAPPING_CHANGE_THRESHOLD = 3
 
 _DIGEST_KEYS = {"interval_seconds", "webhook_url", "email_to",
-                "email_from"}
+                "email_from", "smtp_host", "smtp_port", "smtp_user",
+                "smtp_password", "smtp_starttls"}
+
+_SMTP_ENV_VARS = {
+    "host": "HEALTHCHECK_SMTP_HOST",
+    "port": "HEALTHCHECK_SMTP_PORT",
+    "user": "HEALTHCHECK_SMTP_USER",
+    "password": "HEALTHCHECK_SMTP_PASSWORD",
+    "starttls": "HEALTHCHECK_SMTP_STARTTLS",
+}
+
+
+def _parse_bool_env(value, name):
+    lowered = value.strip().lower()
+    if lowered in ("1", "true", "yes", "on"):
+        return True
+    if lowered in ("0", "false", "no", "off"):
+        return False
+    raise ValueError(
+        f"{name} must be true/false, 1/0, yes/no, or on/off, "
+        f"not {value!r}")
+
+
+def resolve_smtp_config(digest_cfg, environ=None):
+    """Normalized SMTP settings for a digest config, or None.
+
+    Config keys `smtp_host`, `smtp_port`, `smtp_user`,
+    `smtp_password`, and `smtp_starttls` set the defaults; the
+    HEALTHCHECK_SMTP_HOST / _PORT / _USER / _PASSWORD / _STARTTLS
+    environment variables override them when set, so credentials
+    never have to live in the config file. Returns None when no
+    SMTP host is configured anywhere — the digest email is then
+    only rendered and logged, never sent. Raises ValueError on a
+    bad value (bad port, bad STARTTLS flag) so a broken mail setup
+    is rejected at config load instead of failing silently every
+    digest window.
+    """
+    env = os.environ if environ is None else environ
+    host = env.get(_SMTP_ENV_VARS["host"]) or digest_cfg.get("smtp_host")
+    if host is not None and (not isinstance(host, str) or not host):
+        raise ValueError(
+            f"alert_digest smtp_host must be a non-empty string, "
+            f"not {host!r}")
+    if host is None:
+        return None
+    port = digest_cfg.get("smtp_port", DEFAULT_SMTP_PORT)
+    port_env = env.get(_SMTP_ENV_VARS["port"])
+    if port_env:
+        try:
+            port = int(port_env)
+        except ValueError:
+            raise ValueError(
+                f"{_SMTP_ENV_VARS['port']} must be an integer, "
+                f"not {port_env!r}")
+    if (isinstance(port, bool) or not isinstance(port, int)
+            or not 1 <= port <= 65535):
+        raise ValueError(
+            f"alert_digest smtp_port must be an integer between 1 "
+            f"and 65535, not {port!r}")
+    user = env.get(_SMTP_ENV_VARS["user"])
+    if user is None:
+        user = digest_cfg.get("smtp_user")
+    if user is not None and not isinstance(user, str):
+        raise ValueError(
+            f"alert_digest smtp_user must be a string, not {user!r}")
+    user = user or None
+    password = env.get(_SMTP_ENV_VARS["password"])
+    if password is None:
+        password = digest_cfg.get("smtp_password")
+    if password is not None and not isinstance(password, str):
+        raise ValueError(
+            f"alert_digest smtp_password must be a string, "
+            f"not {password!r}")
+    password = password or None
+    starttls = digest_cfg.get("smtp_starttls", True)
+    starttls_env = env.get(_SMTP_ENV_VARS["starttls"])
+    if starttls_env:
+        starttls = _parse_bool_env(starttls_env,
+                                   _SMTP_ENV_VARS["starttls"])
+    if not isinstance(starttls, bool):
+        raise ValueError(
+            f"alert_digest smtp_starttls must be true or false, "
+            f"not {starttls!r}")
+    return {
+        "host": host,
+        "port": port,
+        "user": user,
+        "password": password,
+        "starttls": starttls,
+    }
+
+
+def _default_smtp_factory(host, port, timeout, implicit_tls):
+    if implicit_tls:
+        return smtplib.SMTP_SSL(host, port, timeout=timeout)
+    return smtplib.SMTP(host, port, timeout=timeout)
+
+
+def send_digest_email(message, sender, recipients, smtp,
+                      smtp_factory=None, timeout=DEFAULT_SMTP_TIMEOUT_SECONDS):
+    """Send a rendered digest message via SMTP.
+
+    `smtp` is a resolved config (see resolve_smtp_config): host,
+    port, optional user/password, and starttls. Port 465 uses
+    implicit TLS; any other port upgrades with STARTTLS when
+    `starttls` is set, and otherwise sends in the clear. Logs in
+    with `user`/`password` when a user is set. Returns True when
+    the message was accepted, False on any failure — never raises,
+    so a dead mail server can never take the monitor down. The
+    `smtp_factory` argument exists for tests: a callable taking
+    (host, port, timeout, implicit_tls) and returning an object
+    with the smtplib.SMTP interface.
+    """
+    factory = smtp_factory or _default_smtp_factory
+    host, port = smtp["host"], smtp["port"]
+    implicit_tls = port == IMPLICIT_TLS_SMTP_PORT
+    try:
+        server = factory(host, port, timeout, implicit_tls)
+        try:
+            if not implicit_tls and smtp["starttls"]:
+                server.ehlo()
+                server.starttls(context=ssl.create_default_context())
+                server.ehlo()
+            if smtp["user"]:
+                server.login(smtp["user"], smtp["password"] or "")
+            server.sendmail(sender, recipients, message)
+        finally:
+            try:
+                server.quit()
+            except Exception:
+                pass
+    except Exception as exc:  # refused, timeout, auth, TLS, send error
+        log.warning("alert digest email delivery via SMTP %s:%d "
+                    "failed (%s)", host, port, exc)
+        return False
+    log.info("alert digest email sent via SMTP %s:%d to %s",
+             host, port, ", ".join(recipients))
+    return True
 
 
 def validate_digest_config(value):
@@ -40,7 +186,10 @@ def validate_digest_config(value):
 
     Returns a normalized dict: interval_seconds filled in (default
     900), email_to normalized to a list, email_from filled in
-    (default "healthcheck@localhost"). Raises ValueError on a bad
+    (default "healthcheck@localhost"), and `smtp` holding the
+    resolved SMTP settings (see resolve_smtp_config) or None when
+    no SMTP host is configured — the digest email is then only
+    rendered and logged, never sent. Raises ValueError on a bad
     block — the monitor refuses to start rather than run with a
     digest that can never be delivered.
     """
@@ -86,11 +235,13 @@ def validate_digest_config(value):
         raise ValueError(
             "alert_digest needs somewhere to send to: set "
             "webhook_url and/or email_to")
+    smtp = resolve_smtp_config(value)
     return {
         "interval_seconds": interval,
         "webhook_url": webhook_url,
         "email_to": recipients,
         "email_from": email_from,
+        "smtp": smtp,
     }
 
 
@@ -181,9 +332,9 @@ def render_digest_body(digest):
 def render_digest_email(digest, sender, recipients):
     """The digest as a MIME message string (plain text).
 
-    SMTP delivery is not wired up yet: the caller prints or writes
-    this string (the monitor logs it), so it can be piped to
-    sendmail or handed to an SMTP step later.
+    Delivered over SMTP by DigestAlerter when an SMTP host is
+    configured; otherwise the caller prints or logs this string,
+    so it can be piped to sendmail.
     """
     summary = digest["summary"]
     subject = (f"healthcheck digest: {summary['changes']} change(s), "
@@ -209,10 +360,12 @@ class DigestAlerter:
     The window advances on every due send, delivered or not.
     """
 
-    def __init__(self, config, inner=None, now_fn=None):
+    def __init__(self, config, inner=None, now_fn=None,
+                 smtp_factory=None):
         self.config = validate_digest_config(config)
         self.inner = inner
         self._now = now_fn or time.time
+        self._smtp_factory = smtp_factory
         self._changes = []
         self._window_start = self._now()
         self._last_ok = {}
@@ -242,8 +395,13 @@ class DigestAlerter:
         changes, nothing currently down) — an empty digest is noise,
         not signal. Otherwise returns a dict with the digest
         payload, whether the webhook delivery succeeded (None when
-        no webhook is configured), and the rendered email message
-        (None when no email_to is configured).
+        no webhook is configured), the rendered email message
+        (None when no email_to is configured), and whether the SMTP
+        delivery succeeded (None when no SMTP host is configured —
+        the rendered message is then the operator's copy, logged by
+        the caller). A failed SMTP delivery never raises and never
+        stops the monitor: it is logged and reported as False, and
+        the window still advances.
         """
         now = self._now() if now is None else now
         if now - self._window_start < self.config["interval_seconds"]:
@@ -262,9 +420,15 @@ class DigestAlerter:
                 log.info("alert digest sent (%d change(s))",
                          digest["summary"]["changes"])
         email = None
+        email_ok = None
         if self.config["email_to"]:
             email = render_digest_email(
                 digest, self.config["email_from"],
                 self.config["email_to"])
+            if self.config["smtp"] is not None:
+                email_ok = send_digest_email(
+                    email, self.config["email_from"],
+                    self.config["email_to"], self.config["smtp"],
+                    smtp_factory=self._smtp_factory)
         return {"digest": digest, "webhook_ok": webhook_ok,
-                "email": email}
+                "email": email, "email_ok": email_ok}

@@ -91,7 +91,7 @@ class ValidateDigestConfigTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_digest_config(
                 {"webhook_url": "https://example.com/hook",
-                 "smtp_host": "mail.example.com"})
+                 "smtp_server": "mail.example.com"})
 
     def test_bad_interval_rejected(self):
         for bad in (0, -60, "900", 1.5, True, None):
