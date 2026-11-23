@@ -34,6 +34,11 @@ endpoint, and serves a small status dashboard over `http.server`.
   Combine with `--once` to check first, then render.
   An endpoint whose dependency is not up shows SKIPPED, with the
   dependency named — a skip is not downtime.
+- Prometheus metrics export: `GET /metrics` on the dashboard server
+  emits the same live status in Prometheus text format — a per-endpoint
+  up/down gauge, uptime ratios (all-time, 24h, 7d), a latency summary
+  with p50/p95/p99 plus sum and count over the last 24 hours, and
+  check totals by result — so a Prometheus server can scrape it.
 - A JSON API: `GET /api/status` on the dashboard server returns the
   same data as JSON (status, uptime all-time / 24h / 7d, latency,
   last check, dependency, maintenance windows per endpoint), so
@@ -289,6 +294,22 @@ no checks fall in that window), `latency_ms` (most recent, or `null`),
 last 24 hours, or `null` when no checks ran in that window), and
 `last_checked_at` (epoch seconds, or `null` when never checked).
 
+`GET /metrics` returns the same data in Prometheus text format, for
+scraping: `healthcheck_up` (gauge, 1 when the endpoint is currently
+UP, 0 when DOWN — omitted for a never-checked, SKIPPED, or
+maintenance endpoint), `healthcheck_uptime_ratio` (gauge, share of
+checks that were up, all-time) plus `healthcheck_uptime_ratio_24h`
+and `healthcheck_uptime_ratio_7d`, `healthcheck_latency_ms` (summary
+with `quantile="0.5" / "0.95" / "0.99"` in ms over the last 24 hours,
+plus `_sum` and `_count`), and `healthcheck_checks_total` (counter,
+split by `result="success"` / `"failure"`). The same exclusion rules
+apply as everywhere else: skipped and maintenance checks never ran,
+so they are omitted from the up gauge and the totals and carry no
+latency; a failure below the flap threshold still shows UP and counts
+as a failure in the totals, since the check did fail. An endpoint
+with no counted data in a window has no series for that window —
+no data is not downtime.
+
 ## SLA report
 
 `--sla-report [YYYY-MM]` prints one line per endpoint for a
@@ -369,9 +390,31 @@ make test   # python3 -m unittest discover -s tests -v
 - [x] Latency percentiles: p50/p95/p99 per endpoint over the
   last 24 hours of the persisted history, shown on the dashboard
   and in `GET /api/status` — done in 0.17.0.
-- [ ] Prometheus-style metrics export (`/metrics` endpoint).
+- [x] Prometheus-style metrics export: `GET /metrics` emits
+  Prometheus text format — a per-endpoint up/down gauge, uptime
+  ratios (all-time, 24h, 7d), a latency summary with p50/p95/p99
+  plus sum and count over the last 24 hours, and check totals by
+  result — so a Prometheus server can scrape the monitor — done
+  in 0.18.0.
+- [ ] Next: per-endpoint alert routing (different webhook per
+  endpoint) or a second scrape target for the static status page.
 
 ## Changelog
+
+- **0.18.0** — Prometheus metrics export: `GET /metrics` on the
+  dashboard server returns Prometheus text format —
+  `healthcheck_up` (gauge, 1 UP / 0 DOWN, omitted for never-checked,
+  SKIPPED, or maintenance endpoints), `healthcheck_uptime_ratio`
+  (all-time) plus `_24h` and `_7d` variants, a
+  `healthcheck_latency_ms` summary with p50/p95/p99 plus `_sum` and
+  `_count` over the last 24 hours, and `healthcheck_checks_total`
+  split by `result="success"` / `"failure"`. Skipped and maintenance
+  checks never ran and are excluded everywhere; failed checks count
+  in the latency summary and as failures in the totals; a failure
+  below the flap threshold still shows UP, same as the dashboard.
+  `History.latency_summary()` backs the summary, and
+  `latency_percentiles()` now delegates to it. Served with
+  `Content-Type: text/plain; version=0.0.4`.
 
 - **0.17.0** — Per-endpoint latency percentiles: `History.latency_percentiles(name)`
   returns nearest-rank p50/p95/p99 in ms over the checks that

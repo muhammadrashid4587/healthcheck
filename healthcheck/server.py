@@ -4,11 +4,12 @@ GET / renders a plain HTML table: each endpoint, its current status,
 uptime %, most recent latency, a sparkline of recent latencies, and
 last check time. GET /api/status returns the same data as JSON, for
 scripts and other tools that want to consume the live status without
-scraping the HTML. A check skipped because its dependency is not UP
-renders as SKIPPED, with the dependency named in the Depends on
-column; an endpoint inside a maintenance window renders as
-MAINTENANCE, with its windows listed in the Maintenance column.
-Anything else 404s.
+scraping the HTML. GET /metrics returns the same data in Prometheus
+text format, so a Prometheus server can scrape it. A check skipped
+because its dependency is not UP renders as SKIPPED, with the
+dependency named in the Depends on column; an endpoint inside a
+maintenance window renders as MAINTENANCE, with its windows listed
+in the Maintenance column. Anything else 404s.
 """
 
 from __future__ import annotations
@@ -108,6 +109,103 @@ def status_snapshot(history, endpoints, now=None):
     return {"generated_at": time.time(), "endpoints": out}
 
 
+def _prom_label(value):
+    """Escape a label value for Prometheus exposition format."""
+    return (str(value).replace("\\", "\\\\").replace('"', '\\"')
+            .replace("\n", "\\n"))
+
+
+def render_metrics(history, endpoints, now=None):
+    """Prometheus text format for every endpoint.
+
+    `now` pins the 24-hour / 7-day windows; it defaults to the
+    current time. Four metric families:
+
+    - ``healthcheck_up`` (gauge): 1 when the endpoint is currently
+      UP, 0 when DOWN. An endpoint that was never checked, is
+      currently SKIPPED, or is in maintenance has no current
+      reading, so it is omitted — no data is not a 0. A failure
+      below the flap threshold still shows UP, same as the
+      dashboard.
+    - ``healthcheck_uptime_ratio`` (gauge): share of checks that
+      were up, all-time, plus ``_24h`` and ``_7d`` variants over
+      the last 24 hours / 7 days. Omitted when there is no counted
+      data in that window — no data is not downtime.
+    - ``healthcheck_latency_ms`` (summary): nearest-rank p50/p95/p99
+      in ms over the last 24 hours, plus ``_sum`` and ``_count``.
+      Skipped and maintenance checks never ran and are excluded;
+      failed checks count. Omitted when there are no recorded
+      latencies in the window.
+    - ``healthcheck_checks_total`` (counter): total checks that ran,
+      split by ``result="success"`` / ``"failure"``. Skipped and
+      maintenance checks never ran and are not counted; an
+      unconfirmed failure counts as a failure, since the check did
+      fail. Both series are always present, even at 0.
+    """
+    lines = []
+    lines.append("# HELP healthcheck_up Whether the endpoint is "
+                 "currently up (1) or down (0).")
+    lines.append("# TYPE healthcheck_up gauge")
+    for ep in endpoints:
+        cur = history.current(ep["name"])
+        if cur is None or cur.get("skipped", False) \
+                or cur.get("maintenance", False):
+            continue
+        up = 1 if (cur["ok"] or cur.get("unconfirmed", False)) else 0
+        lines.append(f'healthcheck_up{{name="{_prom_label(ep["name"])}"}} {up}')
+    lines.append("# HELP healthcheck_uptime_ratio Share of checks that "
+                 "were up (all-time).")
+    lines.append("# TYPE healthcheck_uptime_ratio gauge")
+    for ep in endpoints:
+        pct = history.uptime_pct(ep["name"])
+        if pct is not None:
+            lines.append(
+                f'healthcheck_uptime_ratio{{name="{_prom_label(ep["name"])}"}} '
+                f"{pct / 100.0}")
+    for window, suffix in ((24 * 3600, "24h"), (7 * 24 * 3600, "7d")):
+        lines.append(f"# HELP healthcheck_uptime_ratio_{suffix} Share of "
+                     f"checks that were up over the last {suffix}.")
+        lines.append(f"# TYPE healthcheck_uptime_ratio_{suffix} gauge")
+        for ep in endpoints:
+            pct = history.uptime_pct_window(ep["name"], window, now=now)
+            if pct is not None:
+                lines.append(
+                    f'healthcheck_uptime_ratio_{suffix}'
+                    f'{{name="{_prom_label(ep["name"])}"}} {pct / 100.0}')
+    lines.append("# HELP healthcheck_latency_ms Check latency in ms over "
+                 "the last 24 hours.")
+    lines.append("# TYPE healthcheck_latency_ms summary")
+    for ep in endpoints:
+        summary = history.latency_summary(ep["name"], now=now)
+        if summary is None:
+            continue
+        name = _prom_label(ep["name"])
+        lines.append(
+            f'healthcheck_latency_ms{{quantile="0.5",name="{name}"}} '
+            f"{summary['p50']}")
+        lines.append(
+            f'healthcheck_latency_ms{{quantile="0.95",name="{name}"}} '
+            f"{summary['p95']}")
+        lines.append(
+            f'healthcheck_latency_ms{{quantile="0.99",name="{name}"}} '
+            f"{summary['p99']}")
+        lines.append(f'healthcheck_latency_ms_sum{{name="{name}"}} '
+                     f"{summary['sum']}")
+        lines.append(f'healthcheck_latency_ms_count{{name="{name}"}} '
+                     f"{summary['count']}")
+    lines.append("# HELP healthcheck_checks_total Total checks that ran, "
+                 "by result.")
+    lines.append("# TYPE healthcheck_checks_total counter")
+    for ep in endpoints:
+        counts = history.check_counts(ep["name"])
+        name = _prom_label(ep["name"])
+        lines.append(f'healthcheck_checks_total{{name="{name}",'
+                     f'result="success"}} {counts["success"]}')
+        lines.append(f'healthcheck_checks_total{{name="{name}",'
+                     f'result="failure"}} {counts["failure"]}')
+    return "\n".join(lines) + "\n"
+
+
 def render_dashboard(history, endpoints, now=None):
     rows = []
     for ep in endpoints:
@@ -170,6 +268,16 @@ def make_handler(history, endpoints):
                     status_snapshot(history, endpoints)).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+            if self.path == "/metrics":
+                payload = render_metrics(history, endpoints).encode("utf-8")
+                self.send_response(200)
+                self.send_header(
+                    "Content-Type",
+                    "text/plain; version=0.0.4; charset=utf-8")
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
                 self.wfile.write(payload)

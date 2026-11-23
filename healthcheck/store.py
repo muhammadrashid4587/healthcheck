@@ -102,18 +102,35 @@ class History:
         up = sum(1 for c in window if c["ok"])
         return round(100.0 * up / len(window), 1)
 
-    def latency_percentiles(self, name, seconds=24 * 3600, now=None):
-        """p50/p95/p99 of recorded latencies (ms) for an endpoint over
-        the last `seconds` (default 24 hours).
+    def check_counts(self, name):
+        """Total checks that ran per endpoint, by result.
 
-        Nearest-rank percentiles over checks that actually ran in the
-        window: skipped and maintenance checks never ran, so they carry
-        no latency and are left out. Failed checks do count — a slow
-        error response is still a slow response. `now` defaults to
-        time.time(); pass it in tests to pin the window. Returns None
-        when the endpoint has no recorded latencies in the window
-        (never checked, or only skips/maintenance), else
-        {"p50": ..., "p95": ..., "p99": ...}.
+        Skipped and maintenance checks never ran, so they are not
+        counted; every other check is "success" when it was ok and
+        "failure" otherwise (an unconfirmed failure below the flap
+        threshold still failed the check, so it counts as a failure
+        here even though the endpoint still shows UP). Returns
+        {"success": n, "failure": n}.
+        """
+        checks = self._checks.get(name, [])
+        ran = [c for c in checks
+               if not c.get("skipped", False)
+               and not c.get("maintenance", False)]
+        return {
+            "success": sum(1 for c in ran if c["ok"]),
+            "failure": sum(1 for c in ran if not c["ok"]),
+        }
+
+    def latency_summary(self, name, seconds=24 * 3600, now=None):
+        """Latency summary (ms) for an endpoint over the last `seconds`
+        (default 24 hours): nearest-rank p50/p95/p99 plus the sum and
+        count of recorded latencies.
+
+        Same window rules as latency_percentiles: skipped and
+        maintenance checks never ran, so they carry no latency and
+        are left out; failed checks do count. Returns None when the
+        endpoint has no recorded latencies in the window, else
+        {"p50", "p95", "p99", "sum", "count"}.
         """
         import math
 
@@ -135,7 +152,27 @@ class History:
             return round(latencies[min(rank, n) - 1], 1)
 
         return {"p50": percentile(50), "p95": percentile(95),
-                "p99": percentile(99)}
+                "p99": percentile(99), "sum": round(sum(latencies), 1),
+                "count": n}
+
+    def latency_percentiles(self, name, seconds=24 * 3600, now=None):
+        """p50/p95/p99 of recorded latencies (ms) for an endpoint over
+        the last `seconds` (default 24 hours).
+
+        Nearest-rank percentiles over checks that actually ran in the
+        window: skipped and maintenance checks never ran, so they carry
+        no latency and are left out. Failed checks do count — a slow
+        error response is still a slow response. `now` defaults to
+        time.time(); pass it in tests to pin the window. Returns None
+        when the endpoint has no recorded latencies in the window
+        (never checked, or only skips/maintenance), else
+        {"p50": ..., "p95": ..., "p99": ...}.
+        """
+        summary = self.latency_summary(name, seconds=seconds, now=now)
+        if summary is None:
+            return None
+        return {"p50": summary["p50"], "p95": summary["p95"],
+                "p99": summary["p99"]}
 
     def save(self, path):
         tmp = path + ".tmp"
