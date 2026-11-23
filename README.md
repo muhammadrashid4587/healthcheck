@@ -34,6 +34,11 @@ endpoint, and serves a small status dashboard over `http.server`.
   Combine with `--once` to check first, then render.
   An endpoint whose dependency is not up shows SKIPPED, with the
   dependency named — a skip is not downtime.
+- A JSON API: `GET /api/status` on the dashboard server returns the
+  same data as JSON (status, uptime all-time / 24h / 7d, latency,
+  last check, dependency, maintenance windows per endpoint), so
+  scripts and other tools can consume the live status without
+  scraping the HTML.
 
 ## What it is not
 
@@ -169,6 +174,15 @@ counts in uptime, and the endpoint still shows UP — it only flips to
 DOWN once the threshold of consecutive failures is reached. Any other
 path returns 404.
 
+`GET /api/status` returns the same data as JSON, for scripts and
+other tools: `{"generated_at": <epoch>, "endpoints": [...]}` with one
+object per endpoint — `name`, `status` (UP / DOWN / SKIPPED /
+MAINTENANCE / UNKNOWN, same rules as the dashboard), `depends_on`
+(name or `null`), `maintenance_windows` (list of `start` / `end` /
+`days`), `uptime_pct`, `uptime_24h_pct`, `uptime_7d_pct` (`null` when
+no checks fall in that window), `latency_ms` (most recent, or `null`),
+and `last_checked_at` (epoch seconds, or `null` when never checked).
+
 ## Tests
 
 ```sh
@@ -194,8 +208,21 @@ make test   # python3 -m unittest discover -s tests -v
   a self-contained HTML status page (status, uptime 24h/7d,
   sparkline, recent incidents) via `--status-page`, hostable
   anywhere with no server — done in 0.11.0.
+- [x] JSON API for the dashboard: `GET /api/status` returns the
+  live status, uptime, latency, and last check per endpoint as
+  JSON, so scripts and other tools can consume it without scraping
+  the HTML — done in 0.12.0.
 
 ## Changelog
+
+- **0.12.0** — JSON API for the dashboard: `GET /api/status`
+  returns `{"generated_at", "endpoints": [...]}` with one object per
+  endpoint — status (same rules as the dashboard, including
+  unconfirmed failures still showing UP), uptime all-time / 24h /
+  7d (`null` when no data in that window), most recent latency,
+  last check time, dependency, and maintenance windows. Served by
+  the same dashboard server, `Content-Type: application/json`;
+  anything else still 404s.
 
 - **0.11.0** — Static status-page generator: `--status-page PATH`
   writes a self-contained HTML status page from the persisted check

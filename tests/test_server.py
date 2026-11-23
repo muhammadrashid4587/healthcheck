@@ -1,13 +1,111 @@
 """Tests for the status dashboard."""
 
+import json
 import threading
 import unittest
 import urllib.request
 from http.server import ThreadingHTTPServer
 
 from healthcheck.checker import CheckResult
-from healthcheck.server import latency_sparkline, make_handler, render_dashboard
+from healthcheck.server import (latency_sparkline, make_handler,
+                                render_dashboard, status_snapshot)
 from healthcheck.store import History
+
+
+class StatusApiTests(unittest.TestCase):
+    def setUp(self):
+        self.history = History()
+        self.history.record(_result("web", True))
+        self.history.record(_result("db", False))
+        self.endpoints = [
+            {"name": "web", "type": "http", "url": "http://example.com"},
+            {"name": "db", "type": "tcp", "host": "127.0.0.1", "port": 5432},
+        ]
+
+    def _by_name(self, snapshot):
+        return {ep["name"]: ep for ep in snapshot["endpoints"]}
+
+    def test_snapshot_reports_status_uptime_and_latency(self):
+        snap = status_snapshot(self.history, self.endpoints)
+        self.assertIn("generated_at", snap)
+        by_name = self._by_name(snap)
+        self.assertEqual(by_name["web"]["status"], "UP")
+        self.assertEqual(by_name["web"]["uptime_pct"], 100.0)
+        self.assertEqual(by_name["web"]["latency_ms"], 12.5)
+        self.assertEqual(by_name["web"]["last_checked_at"], 1_700_000_000.0)
+        self.assertEqual(by_name["db"]["status"], "DOWN")
+        self.assertEqual(by_name["db"]["uptime_pct"], 0.0)
+        self.assertIsNone(by_name["web"]["depends_on"])
+        self.assertEqual(by_name["web"]["maintenance_windows"], [])
+
+    def test_snapshot_unknown_endpoint_has_null_fields(self):
+        snap = status_snapshot(self.history, self.endpoints + [
+            {"name": "fresh", "type": "tcp", "host": "127.0.0.1", "port": 1}])
+        fresh = self._by_name(snap)["fresh"]
+        self.assertEqual(fresh["status"], "UNKNOWN")
+        self.assertIsNone(fresh["uptime_pct"])
+        self.assertIsNone(fresh["uptime_24h_pct"])
+        self.assertIsNone(fresh["uptime_7d_pct"])
+        self.assertIsNone(fresh["latency_ms"])
+        self.assertIsNone(fresh["last_checked_at"])
+
+    def test_snapshot_skipped_and_maintenance_statuses(self):
+        hist = History()
+        hist.record(CheckResult(
+            name="app", ok=False, latency_ms=0.0, checked_at=1_700_000_000.0,
+            skipped=True, depends_on="db"))
+        hist.record(CheckResult(
+            name="svc", ok=False, latency_ms=0.0, checked_at=1_700_000_000.0,
+            maintenance=True))
+        snap = status_snapshot(hist, [
+            {"name": "app", "type": "http", "url": "http://x",
+             "depends_on": "db"},
+            {"name": "svc", "type": "tcp", "host": "127.0.0.1", "port": 1,
+             "maintenance_windows": [{"days": "sat", "start": "02:00",
+                                      "end": "04:00"}]},
+        ])
+        by_name = self._by_name(snap)
+        self.assertEqual(by_name["app"]["status"], "SKIPPED")
+        self.assertEqual(by_name["app"]["depends_on"], "db")
+        self.assertIsNone(by_name["app"]["latency_ms"])
+        self.assertIsNone(by_name["app"]["uptime_pct"])
+        self.assertEqual(by_name["svc"]["status"], "MAINTENANCE")
+        self.assertEqual(by_name["svc"]["maintenance_windows"],
+                         [{"start": "02:00", "end": "04:00", "days": "sat"}])
+
+    def test_snapshot_unconfirmed_failure_still_up(self):
+        hist = History()
+        hist.record(CheckResult(
+            name="web", ok=False, latency_ms=3.0, checked_at=1_700_000_000.0,
+            unconfirmed=True))
+        snap = status_snapshot(hist, self.endpoints[:1])
+        self.assertEqual(snap["endpoints"][0]["status"], "UP")
+
+    def test_snapshot_is_json_serializable(self):
+        snap = status_snapshot(self.history, self.endpoints)
+        parsed = json.loads(json.dumps(snap))
+        self.assertEqual(parsed, snap)
+
+    def test_api_status_served_over_http(self):
+        server = ThreadingHTTPServer(
+            ("127.0.0.1", 0), make_handler(self.history, self.endpoints))
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/api/status") as resp:
+                body = resp.read().decode("utf-8")
+                content_type = resp.headers.get("Content-Type")
+                status = resp.status
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertEqual(status, 200)
+        self.assertIn("application/json", content_type)
+        snap = json.loads(body)
+        by_name = {ep["name"]: ep for ep in snap["endpoints"]}
+        self.assertEqual(by_name["web"]["status"], "UP")
+        self.assertEqual(by_name["db"]["status"], "DOWN")
 
 
 def _result(name, ok, latency=12.5, at=1_700_000_000.0):
