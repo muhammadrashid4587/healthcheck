@@ -104,13 +104,16 @@ def _fmt_duration(seconds):
     return f"{seconds / 3600:.1f}h"
 
 
-def render_status_page(history, endpoints, now=None):
-    """Render the whole status page as one self-contained HTML string.
+def _render_source(history, endpoints, generated, label=None):
+    """Render one source's banner, endpoint table and incidents.
 
-    `now` is epoch seconds and defaults to the current time; pass it
-    in tests to pin the generated timestamp.
+    A source is one healthcheck instance's history: the same status,
+    uptime and incident-grouping rules apply to every source, so a
+    second source's endpoints are judged exactly like the local
+    ones. `label` names the source in the page; None means the page
+    has a single source, so no heading is added and the output is
+    the same as before extra sources existed.
     """
-    generated = time.time() if now is None else now
     rows = []
     incident_sections = []
     down_count = 0
@@ -171,26 +174,58 @@ def render_status_page(history, endpoints, now=None):
     incidents_html = ("\n".join(incident_sections)
                       if incident_sections
                       else "<p>No incidents recorded.</p>")
+    table = (
+        "<table><tr><th>Endpoint</th><th>Status</th><th>Uptime</th>"
+        "<th>Uptime 24h</th><th>Uptime 7d</th><th>Latency</th>"
+        "<th>Latency history</th><th>Last check</th></tr>\n"
+        f"{body}</table>")
+    if label is None:
+        return (f"{banner}\n{table}\n<h2>Recent incidents</h2>\n"
+                f"{incidents_html}")
+    return (f"<h2>{html.escape(label)}</h2>\n{banner}\n{table}\n"
+            f"<h3>Recent incidents</h3>\n{incidents_html}")
+
+
+def render_status_page(history, endpoints, now=None, extra_sources=None):
+    """Render the whole status page as one self-contained HTML string.
+
+    `now` is epoch seconds and defaults to the current time; pass it
+    in tests to pin the generated timestamp. `extra_sources` is a
+    list of `(label, history, endpoints)` tuples — a second (or
+    further) healthcheck instance's persisted history, merged into
+    the same page under its own labelled section, with its endpoints
+    attributed to that source. With no extra sources the page is
+    exactly the single-source page as before.
+    """
+    generated = time.time() if now is None else now
+    if not extra_sources:
+        sections = _render_source(history, endpoints, generated)
+    else:
+        parts = [_render_source(history, endpoints, generated,
+                                label="local")]
+        for label, src_history, src_endpoints in extra_sources:
+            parts.append(_render_source(src_history, src_endpoints,
+                                        generated, label=label))
+        sections = "\n".join(parts)
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>healthcheck status</title>
 <style>body{{font-family:sans-serif;max-width:720px;margin:2em auto}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccc;padding:6px 10px;text-align:left}}.up{{color:green;font-weight:bold}}.down{{color:red;font-weight:bold}}.skipped{{color:#b8860b;font-weight:bold}}.maintenance{{color:#6a5acd;font-weight:bold}}.banner{{font-size:1.2em}}</style>
 </head><body><h1>Status</h1>
-{banner}
-<table><tr><th>Endpoint</th><th>Status</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Latency</th><th>Latency history</th><th>Last check</th></tr>
-{body}</table>
-<h2>Recent incidents</h2>
-{incidents_html}
+{sections}
 <p>Generated {_fmt_time(generated)} — static snapshot; regenerate to update.</p></body></html>"""
 
 
-def write_status_page(history, endpoints, path, now=None):
+def write_status_page(history, endpoints, path, now=None,
+                      extra_sources=None):
     """Render the status page and write it atomically to `path`.
 
     Writes to a temp file in the same directory, fsyncs, then
     renames, so a reader never sees a half-written page. Returns
-    the path written.
+    the path written. `extra_sources` is passed through to
+    `render_status_page` — see there.
     """
-    page = render_status_page(history, endpoints, now=now)
+    page = render_status_page(history, endpoints, now=now,
+                              extra_sources=extra_sources)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(page)

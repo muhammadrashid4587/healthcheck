@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 from healthcheck.checker import CheckResult
-from healthcheck.cli import main
+from healthcheck.cli import main, parse_status_page_source
 from healthcheck.statuspage import (
     endpoint_status,
     recent_incidents,
@@ -245,6 +245,162 @@ class CliTests(unittest.TestCase):
                 page = fh.read()
             self.assertIn("DOWN", page)
             self.assertIn("1 failed check", page)
+
+
+class ExtraSourceTests(unittest.TestCase):
+    def setUp(self):
+        self.history = History()
+        self.history.record(_result("web", True, at=BASE))
+        self.history.record(_result("web", True, latency=20.0, at=BASE + 60))
+        self.history.record(_result("web", False, at=BASE + 120))
+        self.history.record(_result("web", True, at=BASE + 180))
+        self.endpoints = [
+            {"name": "web", "type": "http", "url": "http://example.com"},
+        ]
+        # Second source: same endpoint name, different history — its
+        # web endpoint never failed, and it also tracks "cache".
+        self.other = History()
+        self.other.record(_result("web", True, at=BASE))
+        self.other.record(_result("web", True, at=BASE + 60))
+        self.other.record(_result("cache", False, at=BASE))
+        self.other.record(_result("cache", True, at=BASE + 60))
+        self.other_endpoints = [
+            {"name": "web", "type": "http", "url": "http://example.com"},
+            {"name": "cache", "type": "tcp", "host": "127.0.0.1",
+             "port": 6379},
+        ]
+
+    def test_extra_source_gets_its_own_labelled_section(self):
+        page = render_status_page(
+            self.history, self.endpoints, now=BASE + 200,
+            extra_sources=[("eu-west", self.other, self.other_endpoints)])
+        self.assertIn("<h2>local</h2>", page)
+        self.assertIn("<h2>eu-west</h2>", page)
+        self.assertIn("cache", page)
+
+    def test_same_endpoint_name_is_judged_per_source(self):
+        # Local web is 3/4 up (one outage); the other source's web
+        # is 2/2 up — the two tables must not share the figure.
+        page = render_status_page(
+            self.history, self.endpoints, now=BASE + 200,
+            extra_sources=[("eu-west", self.other, self.other_endpoints)])
+        self.assertIn("75.0%", page)    # local web
+        self.assertIn("100.0%", page)   # other source's web
+        # The other source's cache outage is grouped as one
+        # incident under its own section, not the local one.
+        self.assertIn("1 failed check", page)
+
+    def test_each_source_gets_its_own_banner(self):
+        # Local web is UP at the end; the other source's cache is
+        # also UP, but make a second source that is down to check
+        # the banner is per-source, not global.
+        down = History()
+        down.record(_result("api", False, at=BASE))
+        page = render_status_page(
+            self.history, self.endpoints, now=BASE + 200,
+            extra_sources=[("eu-west", down,
+                            [{"name": "api", "type": "http",
+                              "url": "http://api.example.com"}])])
+        self.assertIn("All systems operational", page)  # local source
+        self.assertIn("1 endpoint down", page)          # eu-west source
+
+    def test_extra_source_label_is_escaped(self):
+        page = render_status_page(
+            self.history, self.endpoints, now=BASE + 200,
+            extra_sources=[("<b>eu</b>", self.other,
+                            self.other_endpoints)])
+        self.assertNotIn("<b>eu</b>", page)
+        self.assertIn("&lt;b&gt;eu&lt;/b&gt;", page)
+
+    def test_no_extra_sources_page_is_unchanged(self):
+        page = render_status_page(self.history, self.endpoints,
+                                  now=BASE + 200)
+        self.assertNotIn("<h2>local</h2>", page)
+        self.assertIn("75.0%", page)
+
+
+class ParseSourceTests(unittest.TestCase):
+    def test_label_and_path(self):
+        self.assertEqual(parse_status_page_source("eu-west=/x/hist.json"),
+                         ("eu-west", "/x/hist.json"))
+
+    def test_path_may_contain_equals(self):
+        self.assertEqual(parse_status_page_source("eu=/x/a=b.json"),
+                         ("eu", "/x/a=b.json"))
+
+    def test_bare_path_rejected(self):
+        with self.assertRaises(ValueError):
+            parse_status_page_source("/x/hist.json")
+
+    def test_empty_label_or_path_rejected(self):
+        with self.assertRaises(ValueError):
+            parse_status_page_source("=/x/hist.json")
+        with self.assertRaises(ValueError):
+            parse_status_page_source("eu=")
+
+
+class CliExtraSourceTests(unittest.TestCase):
+    def _write_config_and_histories(self, d):
+        cfg_path = os.path.join(d, "config.json")
+        hist_path = os.path.join(d, "history.json")
+        other_path = os.path.join(d, "other-history.json")
+        hist = History()
+        hist.record(_result("web", True, at=BASE))
+        hist.record(_result("web", False, at=BASE + 60))
+        hist.save(hist_path)
+        other = History()
+        other.record(_result("cache", True, at=BASE))
+        other.save(other_path)
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            json.dump({"history_file": hist_path,
+                       "endpoints": [{"name": "web", "type": "http",
+                                      "url": "http://example.com"}]}, fh)
+        return cfg_path, other_path
+
+    def test_status_page_merges_second_source(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg_path, other_path = self._write_config_and_histories(d)
+            out_path = os.path.join(d, "status.html")
+            rc = main(["--config", cfg_path, "--status-page", out_path,
+                       "--status-page-source", f"eu-west={other_path}"])
+            self.assertEqual(rc, 0)
+            with open(out_path, encoding="utf-8") as fh:
+                page = fh.read()
+            self.assertIn("<h2>local</h2>", page)
+            self.assertIn("<h2>eu-west</h2>", page)
+            self.assertIn("cache", page)
+            self.assertIn("1 failed check", page)  # local web outage
+
+    def test_missing_second_history_still_renders(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg_path, _ = self._write_config_and_histories(d)
+            out_path = os.path.join(d, "status.html")
+            rc = main(["--config", cfg_path, "--status-page", out_path,
+                       "--status-page-source",
+                       f"eu-west={os.path.join(d, 'nope.json')}"])
+            self.assertEqual(rc, 0)
+            with open(out_path, encoding="utf-8") as fh:
+                page = fh.read()
+            self.assertIn("<h2>eu-west</h2>", page)
+            self.assertIn("No endpoints configured.", page)
+            self.assertIn("web", page)
+
+    def test_source_flag_without_status_page_is_an_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg_path, other_path = self._write_config_and_histories(d)
+            with self.assertRaises(SystemExit) as cm:
+                main(["--config", cfg_path, "--once",
+                      "--status-page-source", f"eu-west={other_path}"])
+            self.assertEqual(cm.exception.code, 2)
+
+    def test_source_spec_without_equals_is_an_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg_path, other_path = self._write_config_and_histories(d)
+            out_path = os.path.join(d, "status.html")
+            with self.assertRaises(SystemExit) as cm:
+                main(["--config", cfg_path, "--status-page", out_path,
+                      "--status-page-source", other_path])
+            self.assertEqual(cm.exception.code, 2)
 
 
 if __name__ == "__main__":

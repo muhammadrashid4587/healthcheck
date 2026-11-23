@@ -32,6 +32,9 @@ endpoint, and serves a small status dashboard over `http.server`.
   references, so it can be hosted anywhere with no server. It is a
   snapshot of the persisted history; regenerate it to update it.
   Combine with `--once` to check first, then render.
+  `--status-page-source LABEL=PATH` (repeatable) merges another
+  healthcheck instance's persisted history into the same page under
+  its own labelled section, with the same rules per source.
   An endpoint whose dependency is not up shows SKIPPED, with the
   dependency named — a skip is not downtime.
 - Prometheus metrics export: `GET /metrics` on the dashboard server
@@ -410,9 +413,34 @@ make test   # python3 -m unittest discover -s tests -v
   endpoints fall back to the global `webhook_url` (or the digest
   block's `webhook_url`); a bad per-endpoint URL is rejected at
   config load — done in 0.19.0.
-- [ ] Next: a second scrape target for the static status page.
+- [x] Second scrape target for the static status page: `--status-page-source LABEL=PATH`
+  (repeatable) merges another healthcheck instance's persisted
+  history file into the same `--status-page` output, under its own
+  labelled section (the local history is labelled `local`), with
+  the same status, uptime and incident-grouping rules per source —
+  an endpoint with the same name in both sources is judged
+  separately in each. A missing or corrupt second history logs a
+  warning and renders empty instead of taking the page down —
+  done in 0.20.0.
+- [ ] Next: scrape a remote healthcheck instance's `GET /api/status`
+  over HTTP as a status-page source, so no local history file is
+  needed for the second target.
 
 ## Changelog
+
+- **0.20.0** — Second scrape target for the static status page:
+  `--status-page-source LABEL=PATH` (repeatable) merges another
+  healthcheck instance's persisted history file into the same
+  `--status-page` output, under its own labelled section (the local
+  history is labelled `local`), with its endpoints attributed to
+  that source. Status, uptime 24h/7d and incident grouping are
+  computed per source with the same rules as the local one, so an
+  endpoint with the same name in both sources is judged separately
+  in each. A missing or corrupt second history logs a warning and
+  renders empty instead of taking the page down; a spec without
+  `LABEL=` is rejected, and `--status-page-source` without
+  `--status-page` is rejected. With no extra source the page is
+  byte-identical to before.
 
 - **0.19.0** — Per-endpoint alert routing: an endpoint can set its
   own `webhook` URL in the config, so its state-change alerts go to

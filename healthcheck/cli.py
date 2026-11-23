@@ -218,6 +218,28 @@ def history_path(cfg, args):
     return cfg.get("history_file")
 
 
+def parse_status_page_source(spec):
+    """Parse a --status-page-source LABEL=PATH spec.
+
+    The label names the second source in the generated status page,
+    so its endpoints are attributed to it; the path is another
+    healthcheck instance's persisted history file. A spec without
+    '=' is rejected — a bare path has no label to attribute its
+    endpoints to. Raises ValueError with a clear message.
+    """
+    if "=" not in spec:
+        raise ValueError(
+            f"--status-page-source needs LABEL=PATH, got {spec!r}")
+    label, path = spec.split("=", 1)
+    label = label.strip()
+    path = path.strip()
+    if not label or not path:
+        raise ValueError(
+            f"--status-page-source needs a non-empty label and path, "
+            f"got {spec!r}")
+    return label, path
+
+
 def load_history(path, maxlen=100):
     """Load persisted history, or an empty History if there is none.
 
@@ -567,6 +589,13 @@ def main(argv=None):
                              "page from the persisted check history to "
                              "PATH and exit (combines with --once to "
                              "check first, then render)")
+    parser.add_argument("--status-page-source", default=None,
+                        action="append", metavar="LABEL=PATH",
+                        help="merge another healthcheck instance's "
+                             "persisted history file into the static "
+                             "status page as an extra source, labelled "
+                             "LABEL in the page (repeatable; needs "
+                             "--status-page)")
     parser.add_argument("--sla-report", default=None, nargs="?",
                         const="current", metavar="YYYY-MM",
                         help="print the monthly SLA report (uptime per "
@@ -574,6 +603,8 @@ def main(argv=None):
                              "for the given month and exit; with no month "
                              "given, the current month is used")
     args = parser.parse_args(argv)
+    if args.status_page_source and not args.status_page:
+        parser.error("--status-page-source needs --status-page")
     cfg = load_config(args.config)
     history = None
     if args.sla_report:
@@ -601,8 +632,25 @@ def main(argv=None):
         if history is None:
             path = history_path(cfg, args)
             history = load_history(path, maxlen=cfg.get("history", 100))
+        extra_sources = []
+        for spec in args.status_page_source or []:
+            try:
+                label, src_path = parse_status_page_source(spec)
+            except ValueError as exc:
+                parser.error(str(exc))
+            # A missing or corrupt second history logs a warning and
+            # renders empty, like the primary one — a bad second
+            # source must never take down the whole page.
+            src_history = load_history(src_path,
+                                       maxlen=cfg.get("history", 100))
+            src_endpoints = [{"name": name}
+                             for name in src_history.names()]
+            extra_sources.append((label, src_history, src_endpoints))
+            log.info("status page source %r loaded from %s "
+                     "(%d endpoints)", label, src_path, len(src_endpoints))
         write_status_page(history, cfg.get("endpoints", []),
-                          args.status_page)
+                          args.status_page,
+                          extra_sources=extra_sources or None)
         log.info("status page written to %s", args.status_page)
         return 0
     if args.once:
