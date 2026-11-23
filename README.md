@@ -51,12 +51,21 @@ endpoint, and serves a small status dashboard over `http.server`.
   A bad edit never takes the monitor down — it is logged and the
   running config is kept. Flap state resets on a reload, and a
   changed `history_file` still needs a restart.
+- Alert digest: instead of (or in addition to) one webhook per
+  state change, an `alert_digest` block batches confirmed changes
+  into a periodic summary (default every 15 minutes) — the changes
+  in the window, the endpoints currently down, and any endpoints
+  that flapped — POSTed as JSON to a webhook URL and/or rendered
+  as a plain-text MIME email message (logged, not sent — SMTP
+  delivery is not wired up yet).
 
 ## What it is not
 
 - Not a replacement for a real observability platform (no metrics
   pipeline, no distributed tracing). Alerts are log lines plus an
-  optional webhook — no email, no SMS, no PagerDuty.
+  optional per-change webhook and/or a periodic digest — the digest
+  can render an email body, but there is no SMTP delivery and no
+  SMS or PagerDuty.
 - History is in-memory while the process runs, unless `history_file`
   is set (see Config) — then check history is loaded on startup and
   saved after every check round, so uptime survives restarts. A
@@ -156,6 +165,32 @@ normally without it.
   delivery is logged as a warning and never stops the monitor. With
   flap detection, the alert fires only when the outage is confirmed
   (see `flap_threshold` above), not on a single failed check.
+- `alert_digest` — batch confirmed state changes into a periodic
+  digest instead of (or in addition to) one webhook per change
+  (optional). The block is
+  `{"interval_seconds": 900, "webhook_url": "https://hooks.example/digest",
+  "email_to": ["ops@example.com"], "email_from": "monitor@example.com"}`,
+  where `interval_seconds` defaults to 900 (15 minutes) and at
+  least one of `webhook_url` / `email_to` is required. Every
+  interval the monitor sends one JSON payload —
+  `{"type": "digest", "window_start", "window_end", "changes",
+  "currently_down", "flapping", "summary"}` — with the confirmed
+  changes in that window only (a change outside the window belongs
+  to another digest), the endpoints currently down, and the
+  endpoints that changed state three or more times in the window
+  (flapping). An empty window — no changes and nothing currently
+  down — sends nothing, so a quiet monitor stays quiet; a window
+  with no changes but something still down still goes out, so an
+  ongoing outage is not silent. When `email_to` is set, the same
+  digest is rendered as a plain-text MIME message (From/To/Subject
+  plus the changes, currently-down, and flapping lists) and written
+  to the log — SMTP delivery is not wired up yet, so the log is
+  where an operator picks it up, or pipes it to sendmail. A bad
+  digest block (non-object, unknown key, non-positive interval,
+  non-http(s) webhook URL, empty recipient list, no destination at
+  all) is rejected at config load, and on a SIGHUP reload the
+  running config is kept. The digest window resets on a reload,
+  like flap state.
 - `sla_target` — an uptime target in percent for the endpoint
   (optional, e.g. `99.9`), used only by the SLA report below.
   Must be a number above 0 and at most 100; a bad value is
@@ -291,8 +326,28 @@ make test   # python3 -m unittest discover -s tests -v
   before the next check round, and the dashboard follows. A bad
   config is logged and the running one kept, so a bad edit never
   takes the monitor down — done in 0.14.0.
+- [x] Alert digest: batch confirmed state changes into a periodic
+  summary (default every 15 minutes) — the changes in the window,
+  the endpoints currently down, and any flapping endpoints —
+  POSTed as JSON to a webhook URL and/or rendered as a plain-text
+  MIME email message (logged, not sent; SMTP delivery is a
+  follow-up). An empty window sends nothing; a bad digest config
+  is rejected at load — done in 0.15.0.
 
 ## Changelog
+
+- **0.15.0** — Alert digest: an `alert_digest` block in the config
+  batches confirmed state changes into a periodic summary (default
+  every 15 minutes) — the changes in that window only, the
+  endpoints currently down, and the endpoints that changed state
+  three or more times in the window (flapping) — POSTed as JSON to
+  a webhook URL and/or rendered as a plain-text MIME email message
+  (written to the log; SMTP delivery is not wired up yet). An
+  empty window sends nothing; a window with no changes but
+  something still down still goes out. A bad digest block is
+  rejected at config load. Works alongside the per-change webhook,
+  or on its own. The digest window resets on a SIGHUP reload,
+  like flap state.
 
 - **0.14.0** — Config hot-reload: send SIGHUP (`kill -HUP
   <pid>`) and the monitor reloads its config file before the

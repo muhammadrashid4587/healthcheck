@@ -2,7 +2,12 @@
 
 Alerts are log lines, plus an optional webhook: when an endpoint changes
 state, a JSON payload is POSTed to the configured webhook URL (see
-`webhook_url` in the config, or --webhook-url). No email, no SMS.
+`webhook_url` in the config, or --webhook-url). An `alert_digest`
+block in the config batches confirmed changes into a periodic
+digest instead of (or in addition to) one webhook per change — see
+healthcheck.digest. No SMS, and no SMTP delivery yet: a digest
+configured with `email_to` renders a MIME message that is logged,
+not sent.
 Run it under whatever supervisor you already use and watch the logs.
 """
 
@@ -19,6 +24,7 @@ import time
 
 from .alerts import WebhookAlerter
 from .checker import check_endpoint, maintenance_result, skipped_result
+from .digest import DigestAlerter, validate_digest_config
 from .flap import DEFAULT_THRESHOLD, FlapDetector, validate_threshold
 from .maintenance import (active_window, summarize_window,
                           validate_maintenance_windows)
@@ -50,6 +56,8 @@ def load_config(path):
     validate_sla_targets(endpoints)
     if "flap_threshold" in cfg:
         validate_threshold(cfg["flap_threshold"])
+    if "alert_digest" in cfg:
+        validate_digest_config(cfg["alert_digest"])
     return cfg
 
 
@@ -227,9 +235,19 @@ def webhook_url(cfg, args):
 
 
 def make_alerter(cfg, args):
-    """A WebhookAlerter for the configured URL, or None if none is set."""
+    """A WebhookAlerter for the configured URL, or None if none is set.
+
+    When `alert_digest` is configured, the alerter is wrapped in a
+    DigestAlerter that batches confirmed changes into a periodic
+    digest as well as (or instead of) firing per-change webhooks.
+    """
     url = webhook_url(cfg, args) if args is not None else cfg.get("webhook_url")
-    return WebhookAlerter(url) if url else None
+    inner = WebhookAlerter(url) if url else None
+    digest_cfg = cfg.get("alert_digest")
+    if digest_cfg is not None:
+        return DigestAlerter(validate_digest_config(digest_cfg),
+                             inner=inner)
+    return inner
 
 
 def flap_threshold(cfg, args):
@@ -384,7 +402,8 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
     in sync with the current endpoints (slice assignment, so the
     dashboard server holding the same list sees reloads too).
     `max_rounds` caps the loop for tests; production runs pass None
-    and stop only on Ctrl-C.
+    and stop only on Ctrl-C. The digest window resets on a reload,
+    like flap state: the new alerter starts a fresh window.
     """
     state_cfg = cfg
     endpoints = list(cfg.get("endpoints", []))
@@ -420,6 +439,16 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
                         interval)
         check_all(endpoints, history, alerter=alerter,
                   flap_detector=detector)
+        if isinstance(alerter, DigestAlerter):
+            # The digest window advances on its own interval; an
+            # empty window sends nothing. The rendered email body
+            # goes to the log — SMTP delivery is not wired up yet,
+            # so the log is where an operator picks it up.
+            current_down = [ep["name"] for ep in endpoints
+                            if detector.is_down(ep["name"])]
+            sent = alerter.maybe_send(current_down=current_down)
+            if sent is not None and sent["email"]:
+                log.info("alert digest email:\n%s", sent["email"])
         save_history(history, path)
         rounds += 1
         if max_rounds is not None and rounds >= max_rounds:
