@@ -19,6 +19,10 @@ endpoint, and serves a small status dashboard over `http.server`.
 - Flap detection: an endpoint only flips to DOWN (and only alerts)
   after 3 consecutive failed checks by default — a single blip is
   logged, not paged. The threshold is configurable per config.
+- Maintenance windows: an endpoint can declare recurring weekly
+  windows (`maintenance_windows`) during which it is not checked at
+  all — no alert fires, no flap state changes, and uptime is
+  untouched. The dashboard shows MAINTENANCE and lists the windows.
 - Uptime % over the last 24 hours and the last 7 days, so a recent
   outage shows up even when the all-time figure still looks fine.
 - A plain HTML dashboard: endpoint, status, uptime %, latency, last check.
@@ -56,7 +60,8 @@ python3 -m healthcheck.cli --config config.json --once
   "interval_seconds": 30,
   "history": 100,
   "endpoints": [
-    {"name": "example", "type": "http", "url": "https://example.com", "timeout": 5},
+    {"name": "example", "type": "http", "url": "https://example.com", "timeout": 5,
+     "maintenance_windows": [{"days": "sat", "start": "02:00", "end": "04:00"}]},
     {"name": "db", "type": "tcp", "host": "127.0.0.1", "port": 5432, "timeout": 5}
   ]
 }
@@ -112,18 +117,34 @@ python3 -m healthcheck.cli --config config.json --once
   naming an unknown endpoint, or any dependency cycle (including a
   self-dependency), is rejected at config load with a clear error —
   the monitor refuses to start rather than check a broken chain.
+  When the dependency is inside a maintenance window, the dependent
+  is skipped the same way, with the reason naming MAINTENANCE.
+- `maintenance_windows` — a list of recurring weekly windows during
+  which the endpoint is not checked (optional, either type). Each
+  window is `{"start": "HH:MM", "end": "HH:MM"}` in the monitor's
+  local time, with an optional `days` selector: a day abbreviation
+  (`"sat"`), a list of them (`["mon", "wed"]`), `"weekdays"`, or
+  `"weekend"`; no `days` means every day. A window whose end is
+  earlier than its start runs overnight (e.g. `22:00`–`02:00` runs
+  from 22:00 on its day to 02:00 the next morning). During a window
+  the check is paused entirely: the round is recorded as
+  maintenance, no alert fires, flap state is untouched, and uptime
+  is unaffected — a paused check is neither up nor down. Bad windows
+  (bad time format, unknown day, zero-length range, unknown key)
+  are rejected at config load.
 
 ## Dashboard
 
 `GET /` renders a table with one row per endpoint: name, current status
-(UP / DOWN / SKIPPED / UNKNOWN), the endpoint it depends on (or `-`),
-uptime % over the recorded history, uptime %
+(UP / DOWN / SKIPPED / MAINTENANCE / UNKNOWN), the endpoint it depends
+on (or `-`), its maintenance windows (or `-`), uptime % over the
+recorded history, uptime %
 over the last 24 hours and the last 7 days (a `-` when no checks fall
 in that window — no data is not downtime), most recent
 latency, a sparkline of the last 20 recorded latencies, and last check
 time. Skipped checks are recorded in history with the dependency that
 caused the skip, but they never count in uptime and never appear in
-the sparkline. A failure below the flap threshold likewise never
+the sparkline; maintenance rounds are excluded the same way. A failure below the flap threshold likewise never
 counts in uptime, and the endpoint still shows UP — it only flips to
 DOWN once the threshold of consecutive failures is reached. Any other
 path returns 404.
@@ -146,8 +167,23 @@ make test   # python3 -m unittest discover -s tests -v
   single blip does not page anyone — done in 0.8.0.
 - [x] Response-body assertions for HTTP endpoints
   (`expect_body`, `expect_body_regex`) — done in 0.9.0.
+- [x] Maintenance windows: scheduled windows per endpoint during
+  which checks are paused, alerts suppressed, and uptime untouched,
+  shown on the dashboard — done in 0.10.0.
 
 ## Changelog
+
+- **0.10.0** — Maintenance windows: an endpoint can declare
+  `maintenance_windows` — recurring weekly windows (`start` /
+  `end` "HH:MM" in local time, optional `days` selector: a day,
+  a list of days, `"weekdays"`, or `"weekend"`; overnight windows
+  like 22:00–02:00 supported). During a window the endpoint is not
+  checked: the round is recorded as maintenance, no alert fires,
+  flap state is untouched, and uptime math and the latency sparkline
+  exclude it. The dashboard shows a MAINTENANCE status and a
+  Maintenance column listing each endpoint's windows. A dependency
+  in maintenance skips its dependents, like a down dependency.
+  Bad window specs are rejected at config load.
 
 - **0.9.0** — Response-body assertions: an `http` endpoint can
   require the body to contain a substring (`expect_body`) or match

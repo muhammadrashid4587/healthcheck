@@ -4,7 +4,10 @@
       "name": "example",
       "timeout": 5,
       "type": "http",
-      "url": "https://example.com"
+      "url": "https://example.com",
+      "maintenance_windows": [
+        {"days": "sat", "start": "02:00", "end": "04:00"}
+      ]
     },
     {
       "host": "127.0.0.1",

@@ -33,6 +33,23 @@ class CheckResult:
     # happened, but the endpoint is not confirmed down yet — no alert,
     # no uptime penalty, no DOWN on the dashboard.
     unconfirmed: bool = False
+    # The check never ran because the endpoint was in a maintenance
+    # window: neither up nor down, no uptime penalty, no alert.
+    maintenance: bool = False
+
+
+def maintenance_result(name, summary):
+    """A check that never ran because the endpoint was in a
+    maintenance window. `ok` is False (nothing confirmed up) but
+    `maintenance` marks it as neither up nor down: it must not count
+    against uptime, must not fire alerts, and must not touch flap
+    state. `summary` is the window's display string, e.g.
+    "Sat 02:00–04:00".
+    """
+    return CheckResult(
+        name=name, ok=False, latency_ms=0.0,
+        error=f"maintenance window: {summary}",
+        checked_at=time.time(), maintenance=True)
 
 
 def skipped_result(name, depends_on, reason):

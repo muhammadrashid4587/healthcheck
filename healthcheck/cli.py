@@ -17,8 +17,10 @@ import threading
 import time
 
 from .alerts import WebhookAlerter
-from .checker import check_endpoint, skipped_result
+from .checker import check_endpoint, maintenance_result, skipped_result
 from .flap import DEFAULT_THRESHOLD, FlapDetector, validate_threshold
+from .maintenance import (active_window, summarize_window,
+                          validate_maintenance_windows)
 from .server import serve
 from .store import History
 
@@ -40,6 +42,7 @@ def load_config(path):
             raise ValueError(f"tcp endpoint missing host/port: {ep!r}")
     validate_dependencies(endpoints)
     validate_body_assertions(endpoints)
+    validate_maintenance_windows(endpoints)
     if "flap_threshold" in cfg:
         validate_threshold(cfg["flap_threshold"])
     return cfg
@@ -200,15 +203,21 @@ def flap_threshold(cfg, args):
 
 
 def _dependency_state(name, results, history):
-    """State of dependency `name`: "up", "down", "skipped", or "unknown".
+    """State of dependency `name`: "up", "down", "skipped", "maintenance",
+    or "unknown".
 
     This round's result wins; otherwise the last recorded check is
     used, so a dependency that has never been checked is UNKNOWN.
     A failure below the flap threshold is not a confirmed outage, so
     the dependency still counts as UP and its dependents are checked.
+    A dependency inside a maintenance window is MAINTENANCE, so its
+    dependents are skipped — there is nothing to depend on while the
+    thing they need is deliberately paused.
     """
     result = results.get(name)
     if result is not None:
+        if result.maintenance:
+            return "maintenance"
         if result.skipped:
             return "skipped"
         if result.ok or result.unconfirmed:
@@ -217,6 +226,8 @@ def _dependency_state(name, results, history):
     entry = history.current(name)
     if entry is None:
         return "unknown"
+    if entry.get("maintenance", False):
+        return "maintenance"
     if entry.get("skipped", False):
         return "skipped"
     if entry["ok"] or entry.get("unconfirmed", False):
@@ -225,8 +236,15 @@ def _dependency_state(name, results, history):
 
 
 def check_all(endpoints, history, timeout=5.0, alerter=None,
-              flap_detector=None):
+              flap_detector=None, now=None):
     """One check round over all endpoints, dependencies first.
+
+    An endpoint inside a maintenance window is not checked at all:
+    the round is recorded as maintenance, so the dashboard shows
+    MAINTENANCE and the window's summary, but no alert fires, no
+    flap state changes, and uptime is untouched — a paused check is
+    neither up nor down. `now` is epoch seconds and defaults to the
+    current time; pass it in tests to pin the moment.
 
     An endpoint whose `depends_on` is not UP is skipped, not checked:
     the skip is recorded in history (so the dashboard shows SKIPPED
@@ -250,6 +268,14 @@ def check_all(endpoints, history, timeout=5.0, alerter=None,
     results = {}
     for ep in check_order(endpoints):
         name = ep["name"]
+        window = active_window(ep.get("maintenance_windows"), now)
+        if window is not None:
+            summary = summarize_window(window)
+            result = maintenance_result(name, summary)
+            history.record(result)
+            results[name] = result
+            log.info("%s MAINTENANCE (%s)", name, summary)
+            continue
         dep = ep.get("depends_on")
         if dep is not None:
             state = _dependency_state(dep, results, history)
