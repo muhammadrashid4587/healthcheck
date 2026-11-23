@@ -37,7 +37,13 @@ endpoint, and serves a small status dashboard over `http.server`.
   its own labelled section, with the same rules per source.
   `LABEL=URL` does the same for a remote instance, scraping its
   `GET /api/status` over HTTP — no local history file needed for
-  the second target. The remote section shows the remote instance's
+  the second target. Sources can also live in the config file
+  (`status_page_sources`, one entry per source: `label` plus
+  `path` or `url`), so they survive without repeating the flag
+  every time; a flag with the same label as a config entry
+  replaces it, and a new label is added. The dashboard and `GET
+  /api/status` list the merged sources, so the page's inputs are
+  visible while the monitor runs. The remote section shows the remote instance's
   status and uptime figures (all-time, 24h, 7d) as reported; a
   snapshot carries no per-check records, so there is no latency
   sparkline and no incident list for a remote source, and an
@@ -62,8 +68,9 @@ endpoint, and serves a small status dashboard over `http.server`.
   that fell short, and by how many percentage points.
 - Config hot-reload: while the monitor is running, edit
   `config.json` and send SIGHUP (`kill -HUP <pid>`); the new
-  endpoints, check interval, webhook, and flap threshold take
-  effect before the next check round, and the dashboard follows.
+  endpoints, check interval, webhook, flap threshold, and status
+  page sources take effect before the next check round, and the
+  dashboard follows.
   A bad edit never takes the monitor down — it is logged and the
   running config is kept. Flap state resets on a reload, and a
   changed `history_file` still needs a restart.
@@ -131,8 +138,9 @@ While the monitor is running, edit the config file and send
 SIGHUP to reload it without restarting:
 
 ```sh
-kill -HUP <pid>   # new endpoints, interval, webhook, and flap
-                  # threshold apply before the next check round
+kill -HUP <pid>   # new endpoints, interval, webhook, flap
+                  # threshold, and status page sources apply
+                  # before the next check round
 ```
 
 The reloaded config is validated the same way as at startup: a
@@ -141,7 +149,10 @@ dependency, bad `sla_target`, bad regex, ...) is logged as a
 warning and the running config is kept — the monitor never stops
 on a bad edit. Endpoints added by the reload are checked from the
 next round, removed ones stop being checked, and the dashboard
-and `GET /api/status` show the new endpoint list. Two things do
+and `GET /api/status` show the new endpoint list. A reload also
+picks up changes to `status_page_sources`; a bad source entry in
+the reloaded file is warned about and skipped (the rest of the
+new config still applies), it does not keep the old config. Two things do
 not change on a reload: flap state resets (an endpoint mid-outage
 needs the threshold's failures again before it re-alerts), and
 `history_file` is not re-read — changing where history is stored
@@ -175,6 +186,19 @@ normally without it.
   across restarts (optional; default is in-memory only). The
   `--history-file` flag overrides it. The file is written atomically
   after every check round and on shutdown.
+- `status_page_sources` — extra sources for the static status page
+  (optional), so they survive without repeating
+  `--status-page-source` every time: a list of `{"label": ...,
+  "path": ...}` entries (another instance's persisted history
+  file) and/or `{"label": ..., "url": ...}` entries (a remote
+  instance's base URL, scraped over `GET /api/status`). A
+  `--status-page-source LABEL=...` flag with the same label as a
+  config entry replaces it; a new label is added. A bad entry
+  (not an object, no label, both or neither of `path`/`url`, a
+  non-http(s) `url`, a duplicate label) is logged as a warning
+  and skipped — a bad second source never takes the monitor down.
+  The merged list is shown on the dashboard and in `GET
+  /api/status`, and a SIGHUP reload picks up changes to it.
 - `webhook_url` — URL to POST a JSON alert to when an endpoint changes
   state (optional; default is log lines only). The `--webhook-url`
   flag overrides it. The payload is
@@ -311,7 +335,11 @@ MAINTENANCE / UNKNOWN, same rules as the dashboard), `depends_on`
 no checks fall in that window), `latency_ms` (most recent, or `null`),
 `latency_percentiles` (`{"p50", "p95", "p99"}` in ms over the
 last 24 hours, or `null` when no checks ran in that window), and
-`last_checked_at` (epoch seconds, or `null` when never checked).
+`last_checked_at` (epoch seconds, or `null` when never checked) —
+plus a `status_page_sources` list (`{"label", "path"|"url"}` per
+merged source), so a consumer can see what the static status page
+would merge in. The dashboard shows the same list in a "Status
+page sources" section below the endpoint table.
 
 `GET /metrics` returns the same data in Prometheus text format, for
 scraping: `healthcheck_up` (gauge, 1 when the endpoint is currently
@@ -439,10 +467,35 @@ make test   # python3 -m unittest discover -s tests -v
   latency sparkline and no incident list; an unreachable instance
   or bad JSON logs a warning and renders empty instead of taking
   the page down — done in 0.21.0.
-- [ ] Next: `status_page_sources` in the config file, so file and
-  remote sources survive without repeating the flag every time.
+- [x] `status_page_sources` in the config file: `{"label", "path"}`
+  and `{"label", "url"}` entries so file and remote sources
+  survive without repeating the flag every time, validated at
+  load and on SIGHUP reload (a bad entry is warned about and
+  skipped, never fatal); `--status-page-source` flags still work
+  and replace a config entry with the same label. The dashboard
+  and `GET /api/status` list the merged sources — done in
+  0.22.0.
+- [ ] Next: per-endpoint expected HTTP status (`expect_status`,
+  e.g. 204 for a health endpoint that never returns 200), so a
+  check can assert on the exact status code instead of only
+  accepting any 2xx/3xx.
 
 ## Changelog
+
+- **0.22.0** — Status-page sources in the config file: a
+  `status_page_sources` list of `{"label", "path"}` and
+  `{"label", "url"}` entries, so file and remote sources survive
+  without repeating `--status-page-source` every time. Entries
+  are validated at config load and on SIGHUP reload — a bad entry
+  (no label, both or neither of `path`/`url`, a non-http(s) url,
+  a duplicate label) logs a warning and is skipped, never taking
+  the monitor down, and a reload with a bad entry still applies
+  the rest of the new config. `--status-page-source` flags merge
+  with the config list: a flag with the same label replaces that
+  entry, a new label is added. The dashboard gains a "Status page
+  sources" section and `GET /api/status` gains a
+  `status_page_sources` key listing the merged sources, both kept
+  in sync across a SIGHUP reload.
 
 - **0.21.0** — Remote status-page source: `--status-page-source
   LABEL=URL` scrapes a remote healthcheck instance's `GET

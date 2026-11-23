@@ -58,6 +58,7 @@ def load_config(path):
     validate_maintenance_windows(endpoints)
     validate_sla_targets(endpoints)
     validate_endpoint_webhooks(endpoints)
+    validate_status_page_sources(cfg)
     if "flap_threshold" in cfg:
         validate_threshold(cfg["flap_threshold"])
     if "alert_digest" in cfg:
@@ -103,6 +104,125 @@ def install_reload_handler(reload_requested):
                     "reload unavailable", exc)
         return False
     return True
+
+
+def validate_status_page_sources(cfg):
+    """Normalize the `status_page_sources` config key.
+
+    Each entry is {"label": ..., "path": ...} for another instance's
+    persisted history file, or {"label": ..., "url": ...} for a
+    remote instance's GET /api/status. A bad entry — not an object,
+    no usable label, both or neither of path/url, a non-http(s) url,
+    an unknown key, a duplicate label — is logged as a warning and
+    skipped, never fatal: a bad second source must never take the
+    monitor down, the same rule as a bad edit on a SIGHUP reload.
+    Returns the normalized list, and stores it back in cfg so
+    callers and reloads see the same shape.
+    """
+    raw = cfg.get("status_page_sources", [])
+    if not isinstance(raw, list):
+        log.warning("status_page_sources must be a list, not %s; "
+                    "ignoring it", type(raw).__name__)
+        cfg["status_page_sources"] = []
+        return []
+    sources, seen = [], set()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            log.warning("status_page_sources entry %r is not an "
+                        "object; skipping it", entry)
+            continue
+        label = entry.get("label")
+        if not isinstance(label, str) or not label.strip():
+            log.warning("status_page_sources entry %r has no label; "
+                        "skipping it", entry)
+            continue
+        label = label.strip()
+        if label in seen:
+            log.warning("status_page_sources label %r is duplicated; "
+                        "keeping the first entry", label)
+            continue
+        keys = set(entry)
+        if keys - {"label", "path", "url"}:
+            log.warning("status_page_sources entry for %r has unknown "
+                        "keys %s; skipping it", label,
+                        sorted(keys - {"label", "path", "url"}))
+            continue
+        path, url = entry.get("path"), entry.get("url")
+        if (path is None) == (url is None):
+            log.warning("status_page_sources entry for %r needs exactly "
+                        "one of path/url; skipping it", label)
+            continue
+        if path is not None:
+            if not isinstance(path, str) or not path.strip():
+                log.warning("status_page_sources entry for %r has a "
+                            "bad path %r; skipping it", label, path)
+                continue
+            source = {"label": label, "path": path.strip()}
+        else:
+            if (not isinstance(url, str) or not url.strip()
+                    or not url.strip().startswith(("http://", "https://"))):
+                log.warning("status_page_sources entry for %r has a "
+                            "bad url %r; skipping it", label, url)
+                continue
+            source = {"label": label, "url": url.strip()}
+        seen.add(label)
+        sources.append(source)
+    cfg["status_page_sources"] = sources
+    return sources
+
+
+def merged_status_page_sources(cfg, args):
+    """Config-file status page sources merged with --status-page-source.
+
+    The config list comes first; a CLI flag with the same label as a
+    config entry replaces it (the flag wins), and a new label is
+    appended. Returns a list of {"label", "path"|"url"} dicts.
+    Raises ValueError on a bad CLI spec — the caller reports it.
+    `cfg` is expected to be a loaded config (see
+    `validate_status_page_sources`); a hand-built config without
+    the key simply contributes nothing.
+    """
+    merged = {src["label"]: dict(src)
+              for src in cfg.get("status_page_sources", [])}
+    for spec in getattr(args, "status_page_source", None) or []:
+        label, src = parse_status_page_source(spec)
+        if src.startswith(("http://", "https://")):
+            merged[label] = {"label": label, "url": src}
+        else:
+            merged[label] = {"label": label, "path": src}
+    return list(merged.values())
+
+
+def load_status_page_source(label, src, cfg):
+    """Load one status-page source as (label, history, endpoints).
+
+    A remote (http(s)) source is scraped via fetch_remote_status;
+    anything else is read as a persisted history file. A missing,
+    corrupt, or unreachable source logs a warning and renders
+    empty instead of taking the page down.
+    """
+    if src.startswith(("http://", "https://")):
+        # A remote instance: scrape its GET /api/status.
+        # Unreachable or bad data logs a warning and renders
+        # empty, like a missing history file — a bad second
+        # source must never take down the page.
+        src_history = fetch_remote_status(src)
+        if src_history is None:
+            src_history = History(maxlen=cfg.get("history", 100))
+        src_endpoints = [{"name": name}
+                         for name in src_history.names()]
+        log.info("status page source %r fetched from %s "
+                 "(%d endpoints)", label, src, len(src_endpoints))
+    else:
+        # A missing or corrupt second history logs a warning and
+        # renders empty, like the primary one — a bad second
+        # source must never take down the whole page.
+        src_history = load_history(src, maxlen=cfg.get("history", 100))
+        src_endpoints = [{"name": name}
+                         for name in src_history.names()]
+        log.info("status page source %r loaded from %s "
+                 "(%d endpoints)", label, src, len(src_endpoints))
+    return label, src_history, src_endpoints
 
 
 def validate_endpoint_webhooks(endpoints):
@@ -454,7 +574,7 @@ def check_all(endpoints, history, timeout=5.0, alerter=None,
 
 def monitor_loop(cfg, history, path, args, stop, config_path=None,
                  reload_requested=None, max_rounds=None,
-                 live_endpoints=None):
+                 live_endpoints=None, live_sources=None):
     """Check rounds until `stop` is set; returns the config in effect
     when the loop ends.
 
@@ -471,6 +591,8 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
     restart. `live_endpoints`, when given, is a list the loop keeps
     in sync with the current endpoints (slice assignment, so the
     dashboard server holding the same list sees reloads too).
+    `live_sources` is the same for the merged status page sources,
+    so the dashboard and GET /api/status follow a reload too.
     `max_rounds` caps the loop for tests; production runs pass None
     and stop only on Ctrl-C. The digest window resets on a reload,
     like flap state: the new alerter starts a fresh window.
@@ -484,6 +606,8 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
     detector = FlapDetector(flap_threshold(cfg, args))
     if live_endpoints is not None:
         live_endpoints[:] = endpoints
+    if live_sources is not None:
+        live_sources[:] = merged_status_page_sources(cfg, args)
     rounds = 0
     while not stop.is_set():
         if reload_requested is not None and reload_requested.is_set():
@@ -500,6 +624,9 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
                     state_cfg = new_cfg
                     if live_endpoints is not None:
                         live_endpoints[:] = endpoints
+                    if live_sources is not None:
+                        live_sources[:] = merged_status_page_sources(
+                            new_cfg, args)
                     log.info(
                         "config reloaded: %d endpoint(s), added %s, "
                         "removed %s, checking every %ds",
@@ -546,12 +673,16 @@ def run_forever(cfg, host, port, args=None, config_path=None):
     # checker loop, so a SIGHUP reload changes what the dashboard
     # shows too.
     live_endpoints = list(cfg.get("endpoints", []))
+    # The same for the merged status page sources: the dashboard and
+    # GET /api/status list them, and a reload updates the list.
+    live_sources = merged_status_page_sources(cfg, args)
     thread = threading.Thread(
         target=monitor_loop,
         args=(cfg, history, path, args, stop),
         kwargs={"config_path": config_path,
                 "reload_requested": reload_requested,
-                "live_endpoints": live_endpoints},
+                "live_endpoints": live_endpoints,
+                "live_sources": live_sources},
         name="checker", daemon=True)
     thread.start()
     log.info("dashboard at http://%s:%d/ — checking %d endpoint(s) every %ds "
@@ -559,7 +690,8 @@ def run_forever(cfg, host, port, args=None, config_path=None):
              host, port, len(live_endpoints),
              cfg.get("interval_seconds", 30))
     try:
-        serve(history, live_endpoints, host=host, port=port)
+        serve(history, live_endpoints, host=host, port=port,
+              status_page_sources=live_sources)
     except KeyboardInterrupt:
         stop.set()
     finally:
@@ -600,7 +732,9 @@ def main(argv=None):
                              "http(s) URL) into the static status page "
                              "as an extra source, labelled LABEL in "
                              "the page (repeatable; needs "
-                             "--status-page)")
+                             "--status-page). Merges with the config "
+                             "file's status_page_sources; a flag with "
+                             "the same label replaces that entry")
     parser.add_argument("--sla-report", default=None, nargs="?",
                         const="current", metavar="YYYY-MM",
                         help="print the monthly SLA report (uptime per "
@@ -637,37 +771,14 @@ def main(argv=None):
         if history is None:
             path = history_path(cfg, args)
             history = load_history(path, maxlen=cfg.get("history", 100))
-        extra_sources = []
-        for spec in args.status_page_source or []:
-            try:
-                label, src = parse_status_page_source(spec)
-            except ValueError as exc:
-                parser.error(str(exc))
-            if src.startswith(("http://", "https://")):
-                # A remote instance: scrape its GET /api/status.
-                # Unreachable or bad data logs a warning and
-                # renders empty, like a missing history file — a
-                # bad second source must never take down the page.
-                src_history = fetch_remote_status(src)
-                if src_history is None:
-                    src_history = History(maxlen=cfg.get("history", 100))
-                src_endpoints = [{"name": name}
-                                 for name in src_history.names()]
-                log.info("status page source %r fetched from %s "
-                         "(%d endpoints)", label, src,
-                         len(src_endpoints))
-            else:
-                # A missing or corrupt second history logs a warning
-                # and renders empty, like the primary one — a bad
-                # second source must never take down the whole page.
-                src_history = load_history(src,
-                                           maxlen=cfg.get("history", 100))
-                src_endpoints = [{"name": name}
-                                 for name in src_history.names()]
-                log.info("status page source %r loaded from %s "
-                         "(%d endpoints)", label, src,
-                         len(src_endpoints))
-            extra_sources.append((label, src_history, src_endpoints))
+        try:
+            sources = merged_status_page_sources(cfg, args)
+        except ValueError as exc:
+            parser.error(str(exc))
+        extra_sources = [
+            load_status_page_source(
+                src["label"], src.get("path") or src.get("url"), cfg)
+            for src in sources]
         write_status_page(history, cfg.get("endpoints", []),
                           args.status_page,
                           extra_sources=extra_sources or None)

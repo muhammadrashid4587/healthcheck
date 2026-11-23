@@ -51,7 +51,8 @@ def latency_sparkline(history, name, width=100, height=24):
     )
 
 
-def status_snapshot(history, endpoints, now=None):
+def status_snapshot(history, endpoints, now=None,
+                    status_page_sources=None):
     """Machine-readable status for every endpoint: the same data the
     dashboard renders, as plain JSON-friendly values.
 
@@ -68,7 +69,12 @@ def status_snapshot(history, endpoints, now=None):
     recorded latency, or None), "latency_percentiles" ({"p50", "p95",
     "p99"} in ms over the last 24 hours, or None when there are no
     recorded latencies in that window), and "last_checked_at"
-    (epoch seconds, or None when never checked).
+    (epoch seconds, or None when never checked). When
+    `status_page_sources` is given, the merged status page sources
+    (the config file's `status_page_sources` plus any
+    --status-page-source flags) are listed under that key, as
+    {"label", "path"|"url"} dicts, so a consumer can see what the
+    static status page would merge in.
     """
     out = []
     for ep in endpoints:
@@ -106,7 +112,11 @@ def status_snapshot(history, endpoints, now=None):
             "latency_percentiles": history.latency_percentiles(name, now=now),
             "last_checked_at": last,
         })
-    return {"generated_at": time.time(), "endpoints": out}
+    snapshot = {"generated_at": time.time(), "endpoints": out}
+    if status_page_sources is not None:
+        snapshot["status_page_sources"] = [
+            dict(src) for src in status_page_sources]
+    return snapshot
 
 
 def _prom_label(value):
@@ -206,7 +216,16 @@ def render_metrics(history, endpoints, now=None):
     return "\n".join(lines) + "\n"
 
 
-def render_dashboard(history, endpoints, now=None):
+def render_dashboard(history, endpoints, now=None,
+                     status_page_sources=None):
+    """Render the dashboard HTML.
+
+    When `status_page_sources` is given and non-empty, a "Status
+    page sources" section lists the merged sources (label plus the
+    history path or remote URL), so the dashboard shows what the
+    static status page would merge in. With no sources the section
+    is omitted and the page is unchanged.
+    """
     rows = []
     for ep in endpoints:
         name = ep["name"]
@@ -252,20 +271,31 @@ def render_dashboard(history, endpoints, now=None):
             f"<td>{latency_sparkline(history, name)}</td><td>{last}</td></tr>"
         )
     body = "\n".join(rows) or "<tr><td colspan=\"11\">No endpoints configured.</td></tr>"
+    if status_page_sources:
+        items = "".join(
+            f"<li>{html.escape(src['label'])} — "
+            f"{html.escape(src.get('path') or src.get('url') or '')}</li>"
+            for src in status_page_sources)
+        sources_html = (f"<h2>Status page sources</h2>\n<ul>{items}</ul>\n")
+    else:
+        sources_html = ""
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>healthcheck</title>
 <style>body{{font-family:sans-serif;max-width:720px;margin:2em auto}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccc;padding:6px 10px;text-align:left}}.up{{color:green;font-weight:bold}}.down{{color:red;font-weight:bold}}.skipped{{color:#b8860b;font-weight:bold}}.maintenance{{color:#6a5acd;font-weight:bold}}</style>
 </head><body><h1>healthcheck</h1>
 <table><tr><th>Endpoint</th><th>Status</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Latency</th><th>Latency p50 / p95 / p99</th><th>Latency history</th><th>Last check</th></tr>
-{body}</table><p>Rendered {time.strftime('%Y-%m-%d %H:%M:%S')} — reload to update.</p></body></html>"""
+{body}</table>
+{sources_html}<p>Rendered {time.strftime('%Y-%m-%d %H:%M:%S')} — reload to update.</p></body></html>"""
 
 
-def make_handler(history, endpoints):
+def make_handler(history, endpoints, status_page_sources=None):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path == "/api/status":
                 payload = json.dumps(
-                    status_snapshot(history, endpoints)).encode("utf-8")
+                    status_snapshot(history, endpoints,
+                                    status_page_sources=status_page_sources)
+                ).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))
@@ -286,7 +316,9 @@ def make_handler(history, endpoints):
                 self.send_response(404)
                 self.end_headers()
                 return
-            page = render_dashboard(history, endpoints).encode("utf-8")
+            page = render_dashboard(
+                history, endpoints,
+                status_page_sources=status_page_sources).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(page)))
@@ -299,7 +331,17 @@ def make_handler(history, endpoints):
     return Handler
 
 
-def serve(history, endpoints, host="127.0.0.1", port=8080):
-    """Serve the dashboard forever (Ctrl-C to stop)."""
-    server = ThreadingHTTPServer((host, port), make_handler(history, endpoints))
+def serve(history, endpoints, host="127.0.0.1", port=8080,
+          status_page_sources=None):
+    """Serve the dashboard forever (Ctrl-C to stop).
+
+    `status_page_sources` is the merged list of status page sources
+    (config file plus CLI flags) the dashboard and GET /api/status
+    report; pass the shared live list from `run_forever` so a
+    SIGHUP reload updates what is shown.
+    """
+    server = ThreadingHTTPServer(
+        (host, port),
+        make_handler(history, endpoints,
+                     status_page_sources=status_page_sources))
     server.serve_forever()

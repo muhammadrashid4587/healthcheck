@@ -7,11 +7,13 @@ when an endpoint changes state, or a periodic digest that batches
 the changes into one summary (webhook and/or a rendered email body).
 """
 
-__version__ = "0.21.0"
+__version__ = "0.22.0"
 
 from .checker import (CheckResult, check_endpoint, check_http, check_tcp,
                       maintenance_result)
-from .cli import (install_reload_handler, monitor_loop, reload_config)
+from .cli import (install_reload_handler, load_status_page_source,
+                  merged_status_page_sources, monitor_loop, reload_config,
+                  validate_status_page_sources)
 from .digest import (DEFAULT_DIGEST_INTERVAL_SECONDS, DigestAlerter,
                      build_digest, render_digest_email,
                      resolve_smtp_config, send_digest_email,
@@ -46,7 +48,9 @@ __all__ = [
     "fetch_remote_status",
     "in_maintenance",
     "install_reload_handler",
+    "load_status_page_source",
     "maintenance_result",
+    "merged_status_page_sources",
     "monitor_loop",
     "monthly_uptime",
     "parse_month",
@@ -64,6 +68,7 @@ __all__ = [
     "summarize_windows",
     "validate_digest_config",
     "validate_sla_targets",
+    "validate_status_page_sources",
     "validate_maintenance_windows",
     "write_status_page",
 ]

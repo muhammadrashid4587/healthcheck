@@ -8,7 +8,11 @@
       "webhook": "https://hooks.example.com/example",
       "sla_target": 99.9,
       "maintenance_windows": [
-        {"days": "sat", "start": "02:00", "end": "04:00"}
+        {
+          "days": "sat",
+          "start": "02:00",
+          "end": "04:00"
+        }
       ]
     },
     {
@@ -29,5 +33,11 @@
   "flap_threshold": 3,
   "history": 100,
   "history_file": "history.json",
-  "interval_seconds": 30
+  "interval_seconds": 30,
+  "status_page_sources": [
+    {
+      "label": "second-site",
+      "path": "history-second.json"
+    }
+  ]
 }
