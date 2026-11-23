@@ -19,6 +19,19 @@ endpoint, and serves a small status dashboard over `http.server`.
   with the expected and actual codes named. The dashboard and
   `GET /api/status` show the expected vs actual status per
   endpoint.
+- Per-endpoint latency budgets (`max_latency_ms`): an endpoint
+  can declare the slowest it may answer (e.g. 500 ms); a check
+  that answers slower is DOWN, with the actual latency and the
+  budget named in the error, and goes through the same flap
+  rules as any other failure — a single slow check is
+  unconfirmed, and the endpoint only flips to DOWN (and only
+  alerts) after the threshold's consecutive slow checks. The
+  dashboard gains a Latency budget column and `GET /api/status`
+  gains `max_latency_ms` per endpoint, so a slow endpoint shows
+  both numbers side by side. Set in the config file or with
+  `--max-latency NAME=MS` (repeatable, flag wins); a bad value
+  is rejected at config load, and a SIGHUP reload picks up
+  changes.
 - TCP connect checks for services without HTTP.
 - Per-endpoint uptime % and recent check history.
 - Flap detection: an endpoint only flips to DOWN (and only alerts)
@@ -294,6 +307,23 @@ normally without it.
   from the edited file (a bad value keeps the running config),
   and re-applies the flags — a flag naming an endpoint the
   reloaded file dropped keeps the running config too.
+- `max_latency_ms` — the slowest an endpoint may answer, in
+  milliseconds (optional, either type, e.g. `500`): a check that
+  answers slower is DOWN, with the actual latency and the budget
+  named in the error (`latency 812.3 ms exceeds budget 500 ms`),
+  and the failure goes through the same flap detection, alert,
+  and uptime rules as any other failed check — a single slow
+  check is unconfirmed, and the endpoint only flips to DOWN
+  after the threshold's consecutive slow checks. The slow
+  latency is still recorded, so the dashboard and `GET
+  /api/status` show how slow it was next to the budget. Must be
+  a positive number (an integer or a float); a bad value is
+  rejected at config load. The `--max-latency NAME=MS` flag
+  (repeatable) sets or replaces it for one endpoint, and the
+  flag wins over the config file; a flag naming an endpoint that
+  is not in the config is rejected. A SIGHUP reload picks up
+  `max_latency_ms` changes from the edited file (a bad value
+  keeps the running config), and re-applies the flags.
   `cafile`, `cert`, and `key` are optional: `cafile` is a PEM bundle
   of certificate authorities to trust for an `https://` endpoint
   (for a private or self-signed CA); `cert` and `key` are a client
@@ -341,7 +371,8 @@ the endpoint it depends on (or `-`), its maintenance windows (or `-`), uptime % 
 recorded history, uptime %
 over the last 24 hours and the last 7 days (a `-` when no checks fall
 in that window — no data is not downtime), most recent
-latency, a latency p50 / p95 / p99 column (nearest-rank percentiles
+latency, the endpoint's latency budget (`max_latency_ms`, or `-`
+when it has none), a latency p50 / p95 / p99 column (nearest-rank percentiles
 over the last 24 hours, `-` when no checks ran in that window), a sparkline
 of the last 20 recorded latencies, and last check
 time. Skipped checks are recorded in history with the dependency that
@@ -361,6 +392,8 @@ return, or `null` when it accepts any 2xx/3xx), `status_code` (the
 most recent actual HTTP status, or `null` when none was ever
 returned), `uptime_pct`, `uptime_24h_pct`, `uptime_7d_pct` (`null` when
 no checks fall in that window), `latency_ms` (most recent, or `null`),
+`max_latency_ms` (the latency budget in ms the endpoint must answer
+within, or `null` when it has none),
 `latency_percentiles` (`{"p50", "p95", "p99"}` in ms over the
 last 24 hours, or `null` when no checks ran in that window), and
 `last_checked_at` (epoch seconds, or `null` when never checked) —
@@ -514,8 +547,34 @@ make test   # python3 -m unittest discover -s tests -v
   on SIGHUP reload; the dashboard gains an HTTP status column
   and `GET /api/status` gains `expect_status` / `status_code`
   per endpoint — done in 0.23.0.
+- [x] Per-endpoint latency budgets (`max_latency_ms`): a check
+  that answers slower than the endpoint's budget is DOWN, with
+  the actual latency and the budget named in the error, and goes
+  through the same flap detection, alert, and uptime rules as any
+  other failure; the slow latency is still recorded. Set in the
+  config file or with `--max-latency NAME=MS` (repeatable, flag
+  wins), validated at load and on SIGHUP reload; the dashboard
+  gains a Latency budget column and `GET /api/status` gains
+  `max_latency_ms` per endpoint — done in 0.24.0.
 
 ## Changelog
+
+- **0.24.0** — Per-endpoint latency budgets: an endpoint can set
+  `max_latency_ms` (e.g. 500) in the config, and a check that
+  answers slower is DOWN, with the actual latency and the budget
+  named in the error (`latency 812.3 ms exceeds budget 500 ms`),
+  and the failure goes through the same flap detection, alert,
+  and uptime rules as any other failed check — a single slow
+  check is unconfirmed, and the endpoint only flips to DOWN
+  after the threshold's consecutive slow checks. The slow latency
+  is still recorded, so the dashboard and `GET /api/status` show
+  how slow it was next to the budget. `--max-latency NAME=MS`
+  (repeatable) sets or replaces it for one endpoint and wins over
+  the config file; a bad value is rejected at config load, and a
+  SIGHUP reload picks up changes (a bad edit keeps the running
+  config). The dashboard gains a Latency budget column and `GET
+  /api/status` gains `max_latency_ms` per endpoint. Works for
+  `http` and `tcp` endpoints alike.
 
 - **0.23.0** — Per-endpoint expected HTTP status: an `http`
   endpoint can set `expect_status` (e.g. 204) in the config, and

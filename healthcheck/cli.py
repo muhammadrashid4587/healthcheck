@@ -56,6 +56,7 @@ def load_config(path):
     validate_dependencies(endpoints)
     validate_body_assertions(endpoints)
     validate_expect_status(endpoints)
+    validate_latency_budgets(endpoints)
     validate_maintenance_windows(endpoints)
     validate_sla_targets(endpoints)
     validate_endpoint_webhooks(endpoints)
@@ -270,6 +271,84 @@ def validate_expect_status(endpoints):
             raise ValueError(
                 f"endpoint {ep['name']!r}: expect_status must be an "
                 f"HTTP status code (100-599), not {value!r}")
+
+
+def validate_latency_budgets(endpoints):
+    """Reject bad `max_latency_ms` entries at config load.
+
+    An endpoint may declare a latency budget in milliseconds: a
+    check that answers slower than the budget is DOWN, like any
+    other failed check. Any endpoint type can set one, and the
+    value must be a positive number (an integer or a float, not a
+    bool, not a string). Raises ValueError with a clear message;
+    the monitor refuses to start rather than run with a budget it
+    can never judge.
+    """
+    for ep in endpoints:
+        value = ep.get("max_latency_ms")
+        if value is None:
+            continue
+        if (isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or value <= 0):
+            raise ValueError(
+                f"endpoint {ep['name']!r}: max_latency_ms must be a "
+                f"positive number of milliseconds, not {value!r}")
+
+
+def parse_max_latency(spec):
+    """Parse a --max-latency NAME=MS spec.
+
+    The name is an endpoint in the config; the budget is the
+    maximum latency in milliseconds that endpoint may answer
+    within before the check counts as failed. A spec without '=',
+    an empty name, or a budget that is not a positive number is
+    rejected. Raises ValueError with a clear message.
+    """
+    if "=" not in spec:
+        raise ValueError(
+            f"--max-latency needs NAME=MS, got {spec!r}")
+    name, budget = spec.split("=", 1)
+    name = name.strip()
+    budget = budget.strip()
+    if not name or not budget:
+        raise ValueError(
+            f"--max-latency needs a non-empty name and budget, "
+            f"got {spec!r}")
+    try:
+        value = float(budget)
+    except ValueError:
+        raise ValueError(
+            f"--max-latency budget must be a number, got "
+            f"{budget!r}") from None
+    if value <= 0:
+        raise ValueError(
+            f"--max-latency budget must be a positive number of "
+            f"milliseconds, got {budget!r}")
+    return name, value
+
+
+def apply_max_latency_overrides(cfg, args):
+    """Apply --max-latency flags to the config's endpoints.
+
+    Each flag sets (or replaces) the endpoint's `max_latency_ms` —
+    the flag wins over the config file, like --flap-threshold and
+    --webhook-url do for their settings. A flag naming an endpoint
+    that is not in the config is rejected, so a typo does not
+    silently do nothing. `args` may be a namespace without the
+    attribute (tests build their own) — then there is nothing to
+    apply. Raises ValueError with a clear message.
+    """
+    specs = getattr(args, "max_latency", None) or []
+    if not specs:
+        return
+    by_name = {ep["name"]: ep for ep in cfg.get("endpoints", [])}
+    for spec in specs:
+        name, value = parse_max_latency(spec)
+        if name not in by_name:
+            raise ValueError(
+                f"--max-latency names unknown endpoint {name!r}")
+        by_name[name]["max_latency_ms"] = value
 
 
 def parse_expect_status(spec):
@@ -623,6 +702,20 @@ def check_all(endpoints, history, timeout=5.0, alerter=None,
         result = check_endpoint(ep, timeout=timeout)
         if dep is not None:
             result = dataclasses.replace(result, depends_on=dep)
+        budget = ep.get("max_latency_ms")
+        if (result.ok and budget is not None
+                and result.latency_ms > budget):
+            # The endpoint answered, but too slowly: a latency
+            # budget breach is a failed check, exactly like a bad
+            # status or a failed body assertion — it goes through
+            # the same flap rules (unconfirmed below the threshold,
+            # confirmed DOWN and alerting at it) and the same
+            # uptime penalty. The latency is still recorded, so the
+            # dashboard shows how slow it was.
+            result = dataclasses.replace(
+                result, ok=False,
+                error=f"latency {result.latency_ms:.1f} ms exceeds "
+                      f"budget {budget:g} ms")
         outcome = flap_detector.observe(name, result.ok)
         if not result.ok and not outcome.confirmed_down:
             result = dataclasses.replace(result, unconfirmed=True)
@@ -698,6 +791,7 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
                 if new_cfg is not state_cfg:
                     try:
                         apply_expect_status_overrides(new_cfg, args)
+                        apply_max_latency_overrides(new_cfg, args)
                     except ValueError as exc:
                         # A flag naming an endpoint the reloaded file
                         # dropped: keep the running config, like a
@@ -817,6 +911,12 @@ def main(argv=None):
                              "the named endpoint (overrides the config "
                              "file's expect_status for that endpoint; "
                              "repeatable)")
+    parser.add_argument("--max-latency", default=None,
+                        action="append", metavar="NAME=MS",
+                        help="fail the named endpoint's check when its "
+                             "latency exceeds MS milliseconds (overrides "
+                             "the config file's max_latency_ms for that "
+                             "endpoint; repeatable)")
     parser.add_argument("--status-page", default=None, metavar="PATH",
                         help="write a self-contained static HTML status "
                              "page from the persisted check history to "
@@ -845,6 +945,7 @@ def main(argv=None):
     cfg = load_config(args.config)
     try:
         apply_expect_status_overrides(cfg, args)
+        apply_max_latency_overrides(cfg, args)
     except ValueError as exc:
         parser.error(str(exc))
     history = None
