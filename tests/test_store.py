@@ -50,6 +50,65 @@ class StoreTests(unittest.TestCase):
         hist.record(_result("b", False))
         self.assertEqual(hist.uptime_pct("b"), 0.0)
 
+    def test_latency_percentiles_on_known_history(self):
+        hist = History()
+        for latency in (10.0, 20.0, 30.0, 40.0, 50.0,
+                        60.0, 70.0, 80.0, 90.0, 100.0):
+            hist.record(_result("api", True, latency=latency))
+        # Nearest-rank: p50 is the 5th of 10, p95 the 10th, p99 the 10th.
+        self.assertEqual(hist.latency_percentiles("api", now=1_700_000_000.0),
+                         {"p50": 50.0, "p95": 100.0, "p99": 100.0})
+
+    def test_latency_percentiles_single_check(self):
+        hist = History()
+        hist.record(_result("api", True, latency=42.0))
+        self.assertEqual(hist.latency_percentiles("api", now=1_700_000_000.0),
+                         {"p50": 42.0, "p95": 42.0, "p99": 42.0})
+
+    def test_latency_percentiles_window_ignores_old_checks(self):
+        # now = 100000; 24h window starts at 13600.
+        hist = History()
+        hist.record(_result("api", True, latency=5.0, at=1000.0))    # too old
+        hist.record(_result("api", True, latency=10.0, at=20000.0))  # in window
+        hist.record(_result("api", True, latency=20.0, at=90000.0))  # in window
+        self.assertEqual(
+            hist.latency_percentiles("api", now=100000.0),
+            {"p50": 10.0, "p95": 20.0, "p99": 20.0})
+
+    def test_latency_percentiles_none_when_no_checks_in_window(self):
+        hist = History()
+        hist.record(_result("api", True, latency=10.0, at=1000.0))
+        self.assertIsNone(hist.latency_percentiles("api", now=100000.0))
+
+    def test_latency_percentiles_none_without_latencies(self):
+        self.assertIsNone(History().latency_percentiles("api"))
+        hist = History()
+        hist.record(CheckResult(
+            name="api", ok=False, latency_ms=0.0, checked_at=1_700_000_000.0,
+            skipped=True, depends_on="db"))
+        self.assertIsNone(hist.latency_percentiles("api", now=1_700_000_000.0))
+
+    def test_latency_percentiles_exclude_skipped_and_maintenance(self):
+        hist = History()
+        hist.record(_result("api", True, latency=10.0))
+        hist.record(_result("api", True, latency=20.0))
+        hist.record(CheckResult(
+            name="api", ok=False, latency_ms=999.0, checked_at=1_700_000_000.0,
+            skipped=True, depends_on="db"))
+        hist.record(CheckResult(
+            name="api", ok=False, latency_ms=888.0, checked_at=1_700_000_000.0,
+            maintenance=True))
+        # Only the two real checks count: p50 is the 1st of 2, p95/p99 the 2nd.
+        self.assertEqual(hist.latency_percentiles("api", now=1_700_000_000.0),
+                         {"p50": 10.0, "p95": 20.0, "p99": 20.0})
+
+    def test_latency_percentiles_include_failed_checks(self):
+        hist = History()
+        hist.record(_result("api", True, latency=10.0))
+        hist.record(_result("api", False, latency=90.0))
+        self.assertEqual(hist.latency_percentiles("api", now=1_700_000_000.0),
+                         {"p50": 10.0, "p95": 90.0, "p99": 90.0})
+
     def test_current_and_recent(self):
         hist = History()
         hist.record(_result("api", True, at=100.0))

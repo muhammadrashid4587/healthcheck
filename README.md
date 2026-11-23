@@ -268,10 +268,12 @@ on (or `-`), its maintenance windows (or `-`), uptime % over the
 recorded history, uptime %
 over the last 24 hours and the last 7 days (a `-` when no checks fall
 in that window — no data is not downtime), most recent
-latency, a sparkline of the last 20 recorded latencies, and last check
+latency, a latency p50 / p95 / p99 column (nearest-rank percentiles
+over the last 24 hours, `-` when no checks ran in that window), a sparkline
+of the last 20 recorded latencies, and last check
 time. Skipped checks are recorded in history with the dependency that
 caused the skip, but they never count in uptime and never appear in
-the sparkline; maintenance rounds are excluded the same way. A failure below the flap threshold likewise never
+the sparkline or the percentiles; maintenance rounds are excluded the same way. A failure below the flap threshold likewise never
 counts in uptime, and the endpoint still shows UP — it only flips to
 DOWN once the threshold of consecutive failures is reached. Any other
 path returns 404.
@@ -283,7 +285,9 @@ MAINTENANCE / UNKNOWN, same rules as the dashboard), `depends_on`
 (name or `null`), `maintenance_windows` (list of `start` / `end` /
 `days`), `uptime_pct`, `uptime_24h_pct`, `uptime_7d_pct` (`null` when
 no checks fall in that window), `latency_ms` (most recent, or `null`),
-and `last_checked_at` (epoch seconds, or `null` when never checked).
+`latency_percentiles` (`{"p50", "p95", "p99"}` in ms over the
+last 24 hours, or `null` when no checks ran in that window), and
+`last_checked_at` (epoch seconds, or `null` when never checked).
 
 ## SLA report
 
@@ -362,7 +366,22 @@ make test   # python3 -m unittest discover -s tests -v
   465, login when a user is set, and a failed delivery is logged
   and never stops the monitor — done in 0.16.0.
 
+- [x] Latency percentiles: p50/p95/p99 per endpoint over the
+  last 24 hours of the persisted history, shown on the dashboard
+  and in `GET /api/status` — done in 0.17.0.
+- [ ] Prometheus-style metrics export (`/metrics` endpoint).
+
 ## Changelog
+
+- **0.17.0** — Per-endpoint latency percentiles: `History.latency_percentiles(name)`
+  returns nearest-rank p50/p95/p99 in ms over the checks that
+  actually ran in the last 24 hours (skipped and maintenance rounds
+  carry no latency and are excluded; failed checks count, since a
+  slow error response is still a slow response). The dashboard gains
+  a Latency p50 / p95 / p99 column, and `GET /api/status` gains a
+  `latency_percentiles` object per endpoint (`null` when no checks
+  ran in the window). No data is not a percentile: a never-checked
+  endpoint shows `-` / `null`.
 
 - **0.16.0** — SMTP delivery for the alert digest email: an
   `alert_digest` block can now set `smtp_host` (plus optional

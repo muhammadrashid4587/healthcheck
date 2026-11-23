@@ -102,6 +102,41 @@ class History:
         up = sum(1 for c in window if c["ok"])
         return round(100.0 * up / len(window), 1)
 
+    def latency_percentiles(self, name, seconds=24 * 3600, now=None):
+        """p50/p95/p99 of recorded latencies (ms) for an endpoint over
+        the last `seconds` (default 24 hours).
+
+        Nearest-rank percentiles over checks that actually ran in the
+        window: skipped and maintenance checks never ran, so they carry
+        no latency and are left out. Failed checks do count — a slow
+        error response is still a slow response. `now` defaults to
+        time.time(); pass it in tests to pin the window. Returns None
+        when the endpoint has no recorded latencies in the window
+        (never checked, or only skips/maintenance), else
+        {"p50": ..., "p95": ..., "p99": ...}.
+        """
+        import math
+
+        checks = self._checks.get(name)
+        if not checks:
+            return None
+        cutoff = (time.time() if now is None else now) - seconds
+        latencies = sorted(
+            c["latency_ms"] for c in checks
+            if c["checked_at"] >= cutoff
+            and not c.get("skipped", False)
+            and not c.get("maintenance", False))
+        if not latencies:
+            return None
+        n = len(latencies)
+
+        def percentile(p):
+            rank = max(1, math.ceil(p / 100.0 * n))
+            return round(latencies[min(rank, n) - 1], 1)
+
+        return {"p50": percentile(50), "p95": percentile(95),
+                "p99": percentile(99)}
+
     def save(self, path):
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:

@@ -73,6 +73,17 @@ class StatusApiTests(unittest.TestCase):
         self.assertEqual(by_name["svc"]["maintenance_windows"],
                          [{"start": "02:00", "end": "04:00", "days": "sat"}])
 
+    def test_snapshot_reports_latency_percentiles(self):
+        hist = History()
+        for latency in (10.0, 20.0, 30.0, 40.0, 50.0,
+                        60.0, 70.0, 80.0, 90.0, 100.0):
+            hist.record(_result("web", True, latency=latency))
+        snap = status_snapshot(hist, self.endpoints, now=1_700_000_000.0)
+        by_name = self._by_name(snap)
+        self.assertEqual(by_name["web"]["latency_percentiles"],
+                         {"p50": 50.0, "p95": 100.0, "p99": 100.0})
+        self.assertIsNone(by_name["db"]["latency_percentiles"])
+
     def test_snapshot_unconfirmed_failure_still_up(self):
         hist = History()
         hist.record(CheckResult(
@@ -173,6 +184,23 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("db", body)
         self.assertIn("UP", body)
         self.assertIn("DOWN", body)
+
+    def test_dashboard_shows_latency_percentiles_column(self):
+        for latency in (10.0, 20.0, 30.0, 40.0, 50.0,
+                        60.0, 70.0, 80.0, 90.0, 100.0):
+            self.history.record(_result("web", True, latency=latency))
+        page = render_dashboard(self.history, self.endpoints, now=1_700_000_000.0)
+        self.assertIn("Latency p50 / p95 / p99", page)
+        self.assertIn("50.0 / 100.0 / 100.0 ms", page)
+
+    def test_dashboard_percentiles_dash_without_data(self):
+        page = render_dashboard(self.history, self.endpoints, now=1_700_000_000.0)
+        # web has one check, so it shows percentiles; a never-checked
+        # endpoint shows a dash instead.
+        fresh = render_dashboard(self.history, self.endpoints + [
+            {"name": "fresh", "type": "tcp", "host": "127.0.0.1", "port": 1}],
+            now=1_700_000_000.0)
+        self.assertIn("<td>-</td>", fresh)
 
     def test_dashboard_contains_latency_sparkline(self):
         for latency in (10.0, 20.0, 15.0):
