@@ -5,6 +5,7 @@
       "timeout": 5,
       "type": "http",
       "url": "https://example.com",
+      "webhook": "https://hooks.example.com/example",
       "sla_target": 99.9,
       "maintenance_windows": [
         {"days": "sat", "start": "02:00", "end": "04:00"}

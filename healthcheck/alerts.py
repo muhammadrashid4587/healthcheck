@@ -54,26 +54,41 @@ class WebhookAlerter:
 
     The first check of an endpoint establishes its baseline and sends
     nothing — an alert means a *change*, not the initial state.
+
+    `url` is the default webhook for every endpoint. `routes` is an
+    optional per-endpoint override, a mapping of endpoint name to
+    webhook URL: an endpoint with its own webhook alerts its own
+    channel, and falls back to `url` when it has none. Either or
+    both may be absent — an endpoint with no URL anywhere sends
+    nothing, but its state is still tracked.
     """
 
-    def __init__(self, url, timeout=5.0):
+    def __init__(self, url, timeout=5.0, routes=None):
         self.url = url
         self.timeout = timeout
+        self.routes = dict(routes) if routes else {}
         self._last_ok = {}
+
+    def url_for(self, name):
+        """The webhook URL an alert for `name` goes to, or None."""
+        return self.routes.get(name) or self.url
 
     def notify(self, result):
         """Send an alert if result.ok differs from the last known state.
 
         Returns the payload sent, or None when nothing was sent (first
-        check, or no change). Delivery failure does not change the
-        return value: the transition was real even if the webhook
-        was unreachable.
+        check, no change, or no webhook URL for this endpoint).
+        Delivery failure does not change the return value: the
+        transition was real even if the webhook was unreachable.
         """
         previous = self._last_ok.get(result.name)
         self._last_ok[result.name] = result.ok
         if previous is None or previous == result.ok:
             return None
         payload = alert_payload(result, previous)
-        if post_alert(self.url, payload, timeout=self.timeout):
+        url = self.url_for(result.name)
+        if url is None:
+            return None
+        if post_alert(url, payload, timeout=self.timeout):
             log.info("alert sent for %s: %s", result.name, payload["event"])
         return payload

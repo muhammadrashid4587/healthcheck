@@ -173,6 +173,11 @@ normally without it.
   delivery is logged as a warning and never stops the monitor. With
   flap detection, the alert fires only when the outage is confirmed
   (see `flap_threshold` above), not on a single failed check.
+  An endpoint can set its own `webhook` URL instead: its
+  state-change alerts go to its own channel, and its slice of the
+  alert digest is POSTed there too (see `alert_digest` below) —
+  endpoints without one fall back to `webhook_url`. A bad
+  per-endpoint URL (not an http(s) URL) is rejected at config load.
 - `alert_digest` — batch confirmed state changes into a periodic
   digest instead of (or in addition to) one webhook per change
   (optional). The block is
@@ -203,7 +208,10 @@ normally without it.
   changes in that window only (a change outside the window belongs
   to another digest), the endpoints currently down, and the
   endpoints that changed state three or more times in the window
-  (flapping). An empty window — no changes and nothing currently
+  (flapping). When an endpoint has its own `webhook` URL, its
+  changes (and its currently-down entry) go in a separate digest
+  POSTed to its own webhook instead, and the digest email still
+  covers every endpoint. An empty window — no changes and nothing currently
   down — sends nothing, so a quiet monitor stays quiet; a window
   with no changes but something still down still goes out, so an
   ongoing outage is not silent. When `email_to` is set, the same
@@ -396,10 +404,30 @@ make test   # python3 -m unittest discover -s tests -v
   plus sum and count over the last 24 hours, and check totals by
   result — so a Prometheus server can scrape the monitor — done
   in 0.18.0.
-- [ ] Next: per-endpoint alert routing (different webhook per
-  endpoint) or a second scrape target for the static status page.
+- [x] Per-endpoint alert routing: an endpoint can set its own
+  `webhook` URL, so its state-change alerts go to its own channel
+  and its slice of the alert digest is POSTed there, while other
+  endpoints fall back to the global `webhook_url` (or the digest
+  block's `webhook_url`); a bad per-endpoint URL is rejected at
+  config load — done in 0.19.0.
+- [ ] Next: a second scrape target for the static status page.
 
 ## Changelog
+
+- **0.19.0** — Per-endpoint alert routing: an endpoint can set its
+  own `webhook` URL in the config, so its state-change alerts go to
+  its own channel instead of the global `webhook_url`, and its
+  slice of the alert digest — its changes in the window, and its
+  currently-down entry — is POSTed to its own webhook as a
+  separate digest. Endpoints without one fall back to the global
+  URL (or the digest block's `webhook_url`); the digest email
+  still covers every endpoint. A bad per-endpoint URL (not an
+  http(s) URL) is rejected at config load. Also fixed: `make_alerter`
+  used to pre-validate the `alert_digest` block and hand the
+  normalized dict to `DigestAlerter`, which re-validated it and
+  rejected its own `smtp` key — any config with a digest block
+  crashed the monitor at startup; the raw block is now passed
+  through and validated once.
 
 - **0.18.0** — Prometheus metrics export: `GET /metrics` on the
   dashboard server returns Prometheus text format —

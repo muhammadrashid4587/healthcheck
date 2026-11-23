@@ -358,17 +358,31 @@ class DigestAlerter:
     when the interval has elapsed since the last one; an empty
     window — no changes, nothing currently down — sends nothing.
     The window advances on every due send, delivered or not.
+
+    `routes` is an optional per-endpoint override, a mapping of
+    endpoint name to webhook URL: a routed endpoint's changes go in
+    a digest POSTed to its own webhook, while every other
+    endpoint's changes go in a digest POSTed to the digest block's
+    `webhook_url` (or nowhere, when the block has no webhook and
+    only an email destination). The rendered email always covers
+    every endpoint, whatever the routing.
     """
 
     def __init__(self, config, inner=None, now_fn=None,
-                 smtp_factory=None):
+                 smtp_factory=None, routes=None):
         self.config = validate_digest_config(config)
         self.inner = inner
         self._now = now_fn or time.time
         self._smtp_factory = smtp_factory
+        self.routes = dict(routes) if routes else {}
         self._changes = []
         self._window_start = self._now()
         self._last_ok = {}
+
+    def _webhook_for(self, name):
+        """The digest webhook URL for `name`'s changes: its own
+        webhook when one is configured, else the digest block's."""
+        return self.routes.get(name) or self.config["webhook_url"]
 
     def notify(self, result):
         """Record a confirmed state change; delegates to the inner
@@ -394,14 +408,17 @@ class DigestAlerter:
         Returns None when not due, or when the window is empty (no
         changes, nothing currently down) — an empty digest is noise,
         not signal. Otherwise returns a dict with the digest
-        payload, whether the webhook delivery succeeded (None when
-        no webhook is configured), the rendered email message
-        (None when no email_to is configured), and whether the SMTP
-        delivery succeeded (None when no SMTP host is configured —
-        the rendered message is then the operator's copy, logged by
-        the caller). A failed SMTP delivery never raises and never
-        stops the monitor: it is logged and reported as False, and
-        the window still advances.
+        payload (all endpoints, for the email), whether the webhook
+        delivery succeeded — a single bool when the window went to
+        one webhook, a {url: bool} mapping when per-endpoint routing
+        split it across several, None when no webhook is configured
+        — the rendered email message (None when no email_to is
+        configured), and whether the SMTP delivery succeeded (None
+        when no SMTP host is configured — the rendered message is
+        then the operator's copy, logged by the caller). A failed
+        SMTP delivery never raises and never stops the monitor: it
+        is logged and reported as False, and the window still
+        advances.
         """
         now = self._now() if now is None else now
         if now - self._window_start < self.config["interval_seconds"]:
@@ -413,12 +430,40 @@ class DigestAlerter:
         self._changes = []
         if not digest["changes"] and not digest["currently_down"]:
             return None
-        webhook_ok = None
-        if self.config["webhook_url"]:
-            webhook_ok = post_alert(self.config["webhook_url"], digest)
-            if webhook_ok:
-                log.info("alert digest sent (%d change(s))",
-                         digest["summary"]["changes"])
+        # Split the window by webhook destination: each routed
+        # endpoint's changes (and its currently-down entry) go in a
+        # digest POSTed to its own webhook; the rest go to the
+        # digest block's webhook. A group with no changes and
+        # nothing down sends nothing — an ongoing outage is still
+        # reported, but only to the channel that owns the endpoint.
+        groups = {}
+        for change in digest["changes"]:
+            url = self._webhook_for(change["endpoint"])
+            groups.setdefault(url, {"changes": [], "down": []})
+            groups[url]["changes"].append(change)
+        for name in digest["currently_down"]:
+            url = self._webhook_for(name)
+            groups.setdefault(url, {"changes": [], "down": []})
+            groups[url]["down"].append(name)
+        webhook_results = {}
+        for url, group in groups.items():
+            if url is None:
+                continue
+            if not group["changes"] and not group["down"]:
+                continue
+            routed = build_digest(group["changes"], group["down"],
+                                  window_start, window_end)
+            ok = post_alert(url, routed)
+            webhook_results[url] = ok
+            if ok:
+                log.info("alert digest sent (%d change(s)) to %s",
+                         routed["summary"]["changes"], url)
+        if not webhook_results:
+            webhook_ok = None
+        elif len(webhook_results) == 1:
+            webhook_ok = next(iter(webhook_results.values()))
+        else:
+            webhook_ok = webhook_results
         email = None
         email_ok = None
         if self.config["email_to"]:

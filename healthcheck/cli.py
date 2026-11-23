@@ -56,6 +56,7 @@ def load_config(path):
     validate_body_assertions(endpoints)
     validate_maintenance_windows(endpoints)
     validate_sla_targets(endpoints)
+    validate_endpoint_webhooks(endpoints)
     if "flap_threshold" in cfg:
         validate_threshold(cfg["flap_threshold"])
     if "alert_digest" in cfg:
@@ -101,6 +102,27 @@ def install_reload_handler(reload_requested):
                     "reload unavailable", exc)
         return False
     return True
+
+
+def validate_endpoint_webhooks(endpoints):
+    """Reject bad per-endpoint `webhook` entries at config load.
+
+    An endpoint may name its own webhook URL, so its alerts go to a
+    different channel than the global `webhook_url` (see
+    endpoint_webhooks). A bad value is rejected here rather than
+    failing every alert — the monitor refuses to start with a
+    webhook it can never deliver to. Raises ValueError with a
+    clear message.
+    """
+    for ep in endpoints:
+        url = ep.get("webhook")
+        if url is None:
+            continue
+        if (not isinstance(url, str) or not url
+                or not url.startswith(("http://", "https://"))):
+            raise ValueError(
+                f"endpoint {ep['name']!r}: webhook must be an "
+                f"http(s) URL, not {url!r}")
 
 
 def validate_body_assertions(endpoints):
@@ -236,19 +258,40 @@ def webhook_url(cfg, args):
     return cfg.get("webhook_url")
 
 
+def endpoint_webhooks(cfg):
+    """Per-endpoint webhook URLs from the config: {name: url}.
+
+    An endpoint's own `webhook` overrides the global `webhook_url`
+    for that endpoint's alerts — state-change alerts and its slice
+    of the digest go to its own channel. Endpoints without one fall
+    back to the global URL.
+    """
+    return {ep["name"]: ep["webhook"]
+            for ep in cfg.get("endpoints", [])
+            if ep.get("webhook")}
+
+
 def make_alerter(cfg, args):
     """A WebhookAlerter for the configured URL, or None if none is set.
 
     When `alert_digest` is configured, the alerter is wrapped in a
     DigestAlerter that batches confirmed changes into a periodic
     digest as well as (or instead of) firing per-change webhooks.
+    An endpoint's own `webhook` overrides the global URL for that
+    endpoint, in both the per-change alerts and the digest — so an
+    alerter exists whenever any endpoint has its own webhook, even
+    with no global URL set.
     """
     url = webhook_url(cfg, args) if args is not None else cfg.get("webhook_url")
-    inner = WebhookAlerter(url) if url else None
+    routes = endpoint_webhooks(cfg)
+    inner = WebhookAlerter(url, routes=routes) if url or routes else None
     digest_cfg = cfg.get("alert_digest")
     if digest_cfg is not None:
-        return DigestAlerter(validate_digest_config(digest_cfg),
-                             inner=inner)
+        # Pass the raw block: DigestAlerter validates it itself. (Do
+        # not pre-validate here — the normalized dict carries an
+        # "smtp" key that validate_digest_config would reject as
+        # unknown on a second pass.)
+        return DigestAlerter(digest_cfg, inner=inner, routes=routes)
     return inner
 
 
