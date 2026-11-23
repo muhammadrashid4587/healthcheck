@@ -23,6 +23,36 @@ class StoreTests(unittest.TestCase):
         self.assertIsNone(History().uptime_pct("api"))
         self.assertIsNone(History().uptime_pct_window("api", 3600))
 
+    def test_last_error_reports_most_recent_failed_check(self):
+        hist = History()
+        self.assertIsNone(hist.last_error("api"))
+        hist.record(CheckResult(name="api", ok=False, latency_ms=1.0,
+                                checked_at=1_700_000_000.0,
+                                error="connection refused"))
+        hist.record(CheckResult(name="api", ok=False, latency_ms=1.0,
+                                checked_at=1_700_000_001.0,
+                                error="HTTP 500"))
+        hist.record(CheckResult(name="api", ok=True, latency_ms=1.0,
+                                checked_at=1_700_000_002.0))
+        # The error stays after the recovery: it answers why the
+        # endpoint last failed, not why it is down now.
+        self.assertEqual(hist.last_error("api"), "HTTP 500")
+        # An endpoint that never failed has no last error.
+        hist.record(_result("clean", True))
+        self.assertIsNone(hist.last_error("clean"))
+
+    def test_last_error_ignores_skips_and_maintenance(self):
+        hist = History()
+        hist.record(CheckResult(name="api", ok=False, latency_ms=0.0,
+                                checked_at=1_700_000_000.0,
+                                skipped=True, depends_on="db",
+                                error="skipped: db is down"))
+        hist.record(CheckResult(name="api", ok=False, latency_ms=0.0,
+                                checked_at=1_700_000_001.0,
+                                maintenance=True,
+                                error="maintenance window: sat 02:00-04:00"))
+        self.assertIsNone(hist.last_error("api"))
+
     def test_uptime_window_ignores_old_checks(self):
         # now = 100000; 24h window starts at 13600.
         hist = History()

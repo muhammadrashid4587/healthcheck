@@ -52,6 +52,29 @@ class History:
         checks = self._checks.get(name)
         return checks[-1] if checks else None
 
+    def last_error(self, name):
+        """Error string of the endpoint's most recent failed check.
+
+        Only checks that actually ran count: skipped and maintenance
+        rounds never failed, they just did not run, and their entries
+        carry a synthetic "skipped:" / "maintenance window:" note
+        instead of a failure. Unconfirmed failures below the flap
+        threshold are real failures, so they count. The error stays
+        after a later success — it answers "why did it last fail",
+        not "why is it down now". Returns None when the endpoint
+        never failed (or was never checked).
+        """
+        checks = self._checks.get(name)
+        if not checks:
+            return None
+        for entry in reversed(checks):
+            if (not entry.get("ok", False)
+                    and not entry.get("skipped", False)
+                    and not entry.get("maintenance", False)
+                    and entry.get("error") is not None):
+                return entry["error"]
+        return None
+
     def uptime_pct(self, name):
         """Share of recorded checks that were up, or None if no checks.
 

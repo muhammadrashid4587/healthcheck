@@ -396,7 +396,10 @@ in that window — no data is not downtime), most recent
 latency, the endpoint's latency budget (`max_latency_ms`, or `-`
 when it has none), a latency p50 / p95 / p99 column (nearest-rank percentiles
 over the last 24 hours, `-` when no checks ran in that window), a sparkline
-of the last 20 recorded latencies, and last check
+of the last 20 recorded latencies, the error string of the endpoint's
+most recent failed check (the Last error column, `-` when it never
+failed — it stays after a later success, so a recovered endpoint
+still shows why it last failed), and last check
 time. Skipped checks are recorded in history with the dependency that
 caused the skip, but they never count in uptime and never appear in
 the sparkline or the percentiles; maintenance rounds are excluded the same way. A failure below the flap threshold likewise never
@@ -417,7 +420,11 @@ no checks fall in that window), `latency_ms` (most recent, or `null`),
 `max_latency_ms` (the latency budget in ms the endpoint must answer
 within, or `null` when it has none),
 `latency_percentiles` (`{"p50", "p95", "p99"}` in ms over the
-last 24 hours, or `null` when no checks ran in that window), and
+last 24 hours, or `null` when no checks ran in that window),
+`last_error` (the error string of the most recent failed check
+that actually ran, or `null` when the endpoint never failed —
+skipped and maintenance rounds do not count, and it stays after
+a later success), and
 `last_checked_at` (epoch seconds, or `null` when never checked) —
 plus a `status_page_sources` list (`{"label", "path"|"url"}` per
 merged source), so a consumer can see what the static status page
@@ -589,8 +596,24 @@ make test   # python3 -m unittest discover -s tests -v
   (the flap threshold needs repeated rounds and does not apply to
   a one-shot pass); an unknown name is rejected at exit code 2 —
   done in 0.25.0.
+- [x] Last error per endpoint: `History.last_error()` returns the
+  error string of the endpoint's most recent failed check that
+  actually ran (skipped and maintenance rounds do not count, and
+  the error stays after a later success, so a recovered endpoint
+  still shows why it last failed). The dashboard gains a Last
+  error column (HTML-escaped, `-` when the endpoint never failed)
+  and `GET /api/status` gains `last_error` per endpoint — done
+  in 0.26.0.
 
 ## Changelog
+
+- **0.26.0** — Last error per endpoint: the dashboard gains a
+  Last error column showing the error string of the endpoint's
+  most recent failed check (HTML-escaped, `-` when it never
+  failed), and `GET /api/status` gains `last_error` per endpoint.
+  Only checks that actually ran count — skipped and maintenance
+  rounds are excluded — and the error stays after a later success,
+  so a recovered endpoint still shows why it last failed.
 
 - **0.25.0** — Dry-run mode: `--check` validates the config, runs
   one check pass over every endpoint, prints the per-endpoint

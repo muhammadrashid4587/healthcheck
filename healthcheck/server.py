@@ -75,7 +75,11 @@ def status_snapshot(history, endpoints, now=None,
     — a check slower than the budget is DOWN, like any other failed
     check), "latency_percentiles" ({"p50", "p95", "p99"} in ms over
     the last 24 hours, or None when there are no recorded latencies
-    in that window), and "last_checked_at"
+    in that window), "last_error" (the error string of the most
+    recent failed check that actually ran — skipped and maintenance
+    rounds do not count — or None when the endpoint never failed;
+    it stays after a later success, so it answers "why did it last
+    fail"), and "last_checked_at"
     (epoch seconds, or None when never checked). When
     `status_page_sources` is given, the merged status page sources
     (the config file's `status_page_sources` plus any
@@ -121,6 +125,7 @@ def status_snapshot(history, endpoints, now=None,
             "latency_ms": latency,
             "max_latency_ms": ep.get("max_latency_ms"),
             "latency_percentiles": history.latency_percentiles(name, now=now),
+            "last_error": history.last_error(name),
             "last_checked_at": last,
         })
     snapshot = {"generated_at": time.time(), "endpoints": out}
@@ -299,9 +304,11 @@ def render_dashboard(history, endpoints, now=None,
             f"<td>{up}</td><td>{day}</td><td>{week}</td><td>{latency}</td>"
             f"<td>{budget_text}</td>"
             f"<td>{pct_text}</td>"
-            f"<td>{latency_sparkline(history, name)}</td><td>{last}</td></tr>"
+            f"<td>{latency_sparkline(history, name)}</td>"
+            f"<td>{html.escape(history.last_error(name) or '-')}</td>"
+            f"<td>{last}</td></tr>"
         )
-    body = "\n".join(rows) or "<tr><td colspan=\"13\">No endpoints configured.</td></tr>"
+    body = "\n".join(rows) or "<tr><td colspan=\"14\">No endpoints configured.</td></tr>"
     if status_page_sources:
         items = "".join(
             f"<li>{html.escape(src['label'])} — "
@@ -314,7 +321,7 @@ def render_dashboard(history, endpoints, now=None,
 <html><head><meta charset="utf-8"><title>healthcheck</title>
 <style>body{{font-family:sans-serif;max-width:720px;margin:2em auto}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccc;padding:6px 10px;text-align:left}}.up{{color:green;font-weight:bold}}.down{{color:red;font-weight:bold}}.skipped{{color:#b8860b;font-weight:bold}}.maintenance{{color:#6a5acd;font-weight:bold}}</style>
 </head><body><h1>healthcheck</h1>
-<table><tr><th>Endpoint</th><th>Status</th><th>HTTP status</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Latency</th><th>Latency budget</th><th>Latency p50 / p95 / p99</th><th>Latency history</th><th>Last check</th></tr>
+<table><tr><th>Endpoint</th><th>Status</th><th>HTTP status</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Latency</th><th>Latency budget</th><th>Latency p50 / p95 / p99</th><th>Latency history</th><th>Last error</th><th>Last check</th></tr>
 {body}</table>
 {sources_html}<p>Rendered {time.strftime('%Y-%m-%d %H:%M:%S')} — reload to update.</p></body></html>"""
 

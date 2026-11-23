@@ -73,6 +73,53 @@ class StatusApiTests(unittest.TestCase):
         self.assertEqual(by_name["svc"]["maintenance_windows"],
                          [{"start": "02:00", "end": "04:00", "days": "sat"}])
 
+    def test_snapshot_reports_last_error(self):
+        hist = History()
+        hist.record(CheckResult(
+            name="db", ok=False, latency_ms=1.0, checked_at=1_700_000_000.0,
+            error="connection refused"))
+        hist.record(_result("web", True))
+        snap = status_snapshot(hist, self.endpoints)
+        by_name = self._by_name(snap)
+        self.assertEqual(by_name["db"]["last_error"], "connection refused")
+        self.assertIsNone(by_name["web"]["last_error"])
+        # The error stays after the endpoint recovers.
+        hist.record(_result("db", True, at=1_700_000_001.0))
+        snap = status_snapshot(hist, self.endpoints)
+        self.assertEqual(self._by_name(snap)["db"]["last_error"],
+                         "connection refused")
+
+    def test_snapshot_last_error_ignores_skips_and_maintenance(self):
+        hist = History()
+        hist.record(CheckResult(
+            name="app", ok=False, latency_ms=0.0, checked_at=1_700_000_000.0,
+            skipped=True, depends_on="db", error="skipped: db is down"))
+        hist.record(CheckResult(
+            name="svc", ok=False, latency_ms=0.0, checked_at=1_700_000_000.0,
+            maintenance=True,
+            error="maintenance window: sat 02:00-04:00"))
+        snap = status_snapshot(hist, [
+            {"name": "app", "type": "http", "url": "http://x",
+             "depends_on": "db"},
+            {"name": "svc", "type": "tcp", "host": "127.0.0.1", "port": 1},
+        ])
+        by_name = self._by_name(snap)
+        self.assertIsNone(by_name["app"]["last_error"])
+        self.assertIsNone(by_name["svc"]["last_error"])
+
+    def test_dashboard_shows_last_error_escaped(self):
+        hist = History()
+        hist.record(CheckResult(
+            name="db", ok=False, latency_ms=1.0, checked_at=1_700_000_000.0,
+            error="<script>alert(1)</script> refused"))
+        hist.record(_result("web", True))
+        page = render_dashboard(hist, self.endpoints)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt; refused", page)
+        self.assertNotIn("<script>alert(1)</script>", page)
+        self.assertIn("<th>Last error</th>", page)
+        # An endpoint that never failed shows "-" in the column.
+        self.assertIn("<td>-</td>", page)
+
     def test_snapshot_reports_latency_percentiles(self):
         hist = History()
         for latency in (10.0, 20.0, 30.0, 40.0, 50.0,
