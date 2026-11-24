@@ -1,5 +1,6 @@
 """Tests for the status dashboard."""
 
+import html
 import json
 import threading
 import time
@@ -320,6 +321,52 @@ class DashboardTests(unittest.TestCase):
         self.assertIn(start, page)  # incident start
         self.assertIn(end, page)    # recovery
         self.assertIn("(2m 0s, 2 failed checks)", page)
+
+    def test_dashboard_shows_duration_histogram_per_endpoint(self):
+        # db: a 30 s incident and a 2 min incident; web: no
+        # incidents, so no subsection and no histogram for it.
+        hist = History()
+        hist.record(_result("db", True, at=1_700_000_000.0))
+        hist.record(_result("db", False, at=1_700_000_060.0))
+        hist.record(_result("db", True, at=1_700_000_090.0))
+        hist.record(_result("db", False, at=1_700_000_200.0))
+        hist.record(_result("db", True, at=1_700_000_320.0))
+        hist.record(_result("web", True))
+        page = render_dashboard(hist, self.endpoints)
+        # The histogram on the page is the helper's output for the
+        # same data, so the dashboard and the text report agree
+        # (labels are HTML-escaped on the page, as in the markup).
+        buckets = ", ".join(
+            f"{html.escape(b['label'])}: {b['count']}"
+            for b in hist.incident_duration_histogram("db", limit=5))
+        self.assertIn(f"Duration histogram: {buckets}", page)
+        self.assertIn("&lt; 1m: 1", page)
+        self.assertIn("1m – 5m: 1", page)
+        # One histogram only: the endpoint with no incidents gets
+        # neither a subsection nor a histogram.
+        self.assertEqual(page.count("Duration histogram:"), 1)
+
+    def test_dashboard_histogram_covers_only_listed_incidents(self):
+        # Six 2-minute incidents, but the section lists at most 5 —
+        # the histogram must count the same 5, not all 6.
+        hist = History()
+        base = 1_700_000_000.0
+        for i in range(6):
+            hist.record(_result("db", False, at=base + i * 1000))
+            hist.record(_result("db", True, at=base + i * 1000 + 120))
+        hist.record(_result("web", True))
+        page = render_dashboard(hist, self.endpoints)
+        self.assertEqual(page.count("<li>"), 5)
+        self.assertIn("1m – 5m: 5", page)
+        histogram = hist.incident_duration_histogram("db", limit=5)
+        self.assertEqual(sum(b["count"] for b in histogram), 5)
+
+    def test_dashboard_no_histogram_when_quiet(self):
+        hist = History()
+        hist.record(_result("web", True))
+        hist.record(_result("db", True))
+        page = render_dashboard(hist, self.endpoints)
+        self.assertNotIn("Duration histogram:", page)
 
     def test_dashboard_ongoing_incident_shows_no_end(self):
         hist = History()

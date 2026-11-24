@@ -455,9 +455,14 @@ def render_recent_incidents(history, endpoints, now=None):
     (at most 5 per endpoint), from the same History.recent_incidents()
     the JSON API and the static status page use, so the three surfaces
     can never disagree. An ongoing incident shows "ongoing" instead
-    of an end time, with its duration running to `now`. Endpoints
-    with no incidents are omitted; with none at all the section is
-    empty, so a quiet monitor's dashboard is unchanged.
+    of an end time, with its duration running to `now`. Each
+    subsection also carries the endpoint's duration histogram — the
+    same 7 log-spaced buckets the --incidents text report prints,
+    from History.incident_duration_histogram() with the same limit
+    of 5, so the histogram can never disagree with the incidents
+    listed above it. Endpoints with no incidents are omitted; with
+    none at all the section is empty, so a quiet monitor's dashboard
+    is unchanged.
     """
     sections = []
     for ep in endpoints:
@@ -479,8 +484,14 @@ def render_recent_incidents(history, endpoints, now=None):
                 f"({format_duration(incident['duration_s'])}, "
                 f"{incident['checks']} failed check"
                 f"{'s' if incident['checks'] != 1 else ''})</li>")
+        histogram = history.incident_duration_histogram(
+            name, limit=5, now=now)
+        buckets = ", ".join(
+            f"{html.escape(bucket['label'])}: {bucket['count']}"
+            for bucket in histogram)
         sections.append(
-            f"<h3>{html.escape(name)}</h3><ul>{''.join(items)}</ul>")
+            f"<h3>{html.escape(name)}</h3><ul>{''.join(items)}</ul>"
+            f"<p>Duration histogram: {buckets}</p>")
     if not sections:
         return ""
     return "<h2>Recent incidents</h2>\n" + "\n".join(sections)
@@ -514,8 +525,11 @@ def render_dashboard(history, endpoints, now=None,
     recent outages (newest first, at most 5, from the same
     History.recent_incidents() the API and the static status page
     use) — an ongoing incident shows "ongoing" instead of an end
-    time, with its duration running to now. With no incidents
-    recorded anywhere the section is omitted.
+    time, with its duration running to now — plus each endpoint's
+    duration histogram over those same incidents (the same 7
+    log-spaced buckets the --incidents text report prints, from
+    History.incident_duration_histogram() with the same limit of
+    5). With no incidents recorded anywhere the section is omitted.
     """
     current = time.localtime()
     report = {row["name"]: row for row in sla_report(

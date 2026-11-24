@@ -571,7 +571,13 @@ dashboard, the API, and the static status page can never disagree.
 An ongoing incident shows "ongoing" instead of an end time, with its
 duration running to now; an endpoint with no incidents gets no
 subsection, and with no incidents recorded anywhere the section is
-omitted entirely. Any other
+omitted entirely. Each endpoint's subsection also shows its
+duration histogram — the same 7 log-spaced buckets the
+`--incidents` text report prints (`< 1m`, `1m – 5m`, `5m – 15m`,
+`15m – 1h`, `1h – 6h`, `6h – 24h`, `> 24h`), from
+`History.incident_duration_histogram()` with the same limit of 5,
+so the histogram can never disagree with the incidents listed
+above it. Any other
 path returns 404.
 
 `GET /api/status` returns the same data as JSON, for scripts and
@@ -1077,9 +1083,23 @@ make test   # python3 -m unittest discover -s tests -v
   with the incidents listed. The JSON export carries the same
   histogram per endpoint (`duration_histogram`) — done in
   0.41.0.
+- [x] Duration histogram on the live dashboard: each endpoint's
+  "Recent incidents" subsection shows the same per-endpoint
+  duration histogram the `--incidents` report prints, from
+  `History.incident_duration_histogram()` with the same limit
+  of 5 as the incidents listed, so the dashboard, the text
+  report, the JSON export and the API can never disagree —
+  done in 0.42.0.
 
 ## Changelog
 
+- **0.42.0** — Per-incident duration histogram on the live
+  dashboard's "Recent incidents" section: each endpoint's
+  subsection shows its incidents bucketed by duration into the
+  same 7 log-spaced buckets the `--incidents` text report
+  prints, from `History.incident_duration_histogram()` with
+  the same limit of 5 as the incidents listed, so the
+  histogram can never disagree with the incidents above it.
 - **0.41.0** — Per-incident duration histogram in the
   `--incidents` text report: `History.incident_duration_histogram()`
   buckets an endpoint's incidents by duration into log-spaced
