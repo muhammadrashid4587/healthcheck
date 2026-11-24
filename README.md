@@ -83,7 +83,9 @@ endpoint, and serves a small status dashboard over `http.server`.
   the same summary per endpoint as JSON, with the endpoint's
   `sla_target` compared against the 30-day figure; `GET
   /api/status` carries the 30-day uptime and the downtime per
-  window too.
+  window too. `--uptime-report` prints the same summary as plain
+  text (with `--uptime-out PATH` to write it to a file instead),
+  so it can go into a log or a script.
 - Down since: when an endpoint is DOWN the dashboard shows how long
   the outage has lasted ("12m 34s"), from the first failed check in
   the current run of failures — unconfirmed failures below the flap
@@ -1140,9 +1142,32 @@ make test   # python3 -m unittest discover -s tests -v
   `downtime_7d_seconds` / `downtime_30d_seconds` per endpoint, and
   a remote status-page source reports its 30-day figure too —
   done in 0.46.0.
+- [x] Uptime / SLA summary as a text export: `--uptime-report`
+  prints the same per-endpoint summary `GET /api/uptime` returns
+  — uptime %, total downtime, and counted checks over the last
+  24 hours, 7 days, and 30 days, plus the `sla_target` verdict
+  against the 30-day figure — as plain text, rendered from the
+  same `uptime_snapshot` the API serves, so the text export and
+  the API can never disagree. A window with no counted checks
+  prints "no data" instead of a percentage, while its downtime
+  is still shown; `--uptime-out PATH` writes the report to a
+  file instead of printing it — done in 0.47.0.
 
 ## Changelog
 
+- **0.47.0** — Uptime / SLA summary as a text export: a new
+  `--uptime-report` flag prints the same per-endpoint summary
+  `GET /api/uptime` returns — uptime %, total downtime, and
+  counted checks over the last 24 hours, 7 days, and 30 days,
+  plus the endpoint's `sla_target` compared against the 30-day
+  figure (`met`, `short by Xpp`, `no 30d data`, or `none`) — as
+  plain text, rendered from the same `uptime_snapshot` the API
+  serves, so the text export and the API can never disagree.
+  An outage that started before a window only counts the part
+  inside it, an ongoing outage accrues downtime to the report
+  time, and a window with no counted checks reports "no data"
+  with the downtime still counted. `--uptime-out PATH` writes
+  the report to a file instead of printing it.
 - **0.46.0** — Uptime / SLA summary view: a new `GET /api/uptime`
   endpoint returns per endpoint the uptime % and total downtime
   over the last 24 hours, 7 days, and 30 days, plus the

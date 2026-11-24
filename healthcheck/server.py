@@ -352,6 +352,54 @@ def uptime_snapshot(history, endpoints, now=None):
             "endpoints": out}
 
 
+def render_uptime_report(snapshot):
+    """Render an uptime snapshot as plain text.
+
+    Takes the dict `uptime_snapshot` returns, so the text report
+    can never disagree with `GET /api/uptime`: the same uptime %,
+    downtime, and counted checks per window (24h / 7d / 30d), and
+    the same SLA verdict against the 30-day figure. A window with
+    no counted checks prints "no data" instead of a percentage —
+    no data is not downtime — while its downtime is still shown,
+    because an outage that started before the window and never
+    recovered accrues the whole window even with no check inside
+    it. Downtime is printed with `format_duration`, so "600.0s"
+    reads as "10m 0s".
+    """
+    lines = ["Uptime report (generated "
+             + time.strftime("%Y-%m-%d %H:%M:%S",
+                             time.localtime(snapshot["generated_at"]))
+             + ")"]
+    for row in snapshot["endpoints"]:
+        lines.append(f"  {row['name']}:")
+        for label in snapshot["windows"]:
+            window = row["windows"][label]
+            if window["uptime_pct"] is None:
+                uptime = "no data"
+            else:
+                uptime = f"{window['uptime_pct']:.1f}% uptime"
+            lines.append(
+                f"    {label}: {uptime}, "
+                f"{format_duration(window['downtime_seconds'])} "
+                f"downtime ({window['checks']} "
+                f"check{'s' if window['checks'] != 1 else ''})")
+        target = row["sla_target"]
+        if target is None:
+            lines.append("    SLA target: none")
+        elif row["sla_met_30d"] is None:
+            lines.append(f"    SLA target {target:.1f}%: no 30d data")
+        elif row["sla_met_30d"]:
+            lines.append(
+                f"    SLA target {target:.1f}%: met "
+                f"(30d {row['windows']['30d']['uptime_pct']:.1f}%)")
+        else:
+            lines.append(
+                f"    SLA target {target:.1f}%: short by "
+                f"{row['sla_shortfall_30d_pct']:.1f}pp "
+                f"(30d {row['windows']['30d']['uptime_pct']:.1f}%)")
+    return "\n".join(lines) + "\n"
+
+
 def incidents_snapshot(history, endpoints, limit=5, name=None, now=None):
     """Recent incidents per endpoint as a JSON-ready dict, built
     from the same `History.recent_incidents()` the dashboard, the

@@ -35,7 +35,7 @@ from .incidents import (incidents_report, render_incidents_report,
 from .maintenance import (active_window, summarize_window,
                           validate_maintenance_windows)
 from .remote import fetch_remote_status
-from .server import serve
+from .server import render_uptime_report, serve, uptime_snapshot
 from .sla import (breaches, monthly_detail, monthly_uptime, parse_month,
                   render_sla_report, render_sla_report_csv,
                   render_sla_report_json, sla_report, validate_sla_targets)
@@ -1418,6 +1418,14 @@ def main(argv=None):
                         help="with --incidents: export at most N "
                              "incidents per endpoint, newest first "
                              "(must be a positive integer)")
+    parser.add_argument("--uptime-report", action="store_true",
+                        help="print the rolling-window uptime / SLA "
+                             "summary per endpoint (the same figures "
+                             "GET /api/uptime returns, as plain text) "
+                             "and exit")
+    parser.add_argument("--uptime-out", default=None, metavar="PATH",
+                        help="write the --uptime-report output to PATH "
+                             "instead of printing it")
     parser.add_argument("--sla-alert", default=None, nargs="?",
                         const="current", metavar="YYYY-MM",
                         help="fire a webhook alert for every endpoint "
@@ -1438,6 +1446,8 @@ def main(argv=None):
             and not args.incidents:
         parser.error("--incidents-format, --incidents-out, --endpoint "
                      "and --limit need --incidents")
+    if args.uptime_out and not args.uptime_report:
+        parser.error("--uptime-out needs --uptime-report")
     cfg = load_config(args.config)
     try:
         apply_expect_status_overrides(cfg, args)
@@ -1493,6 +1503,17 @@ def main(argv=None):
             output = render_incidents_report(report)
         if args.incidents_out:
             with open(args.incidents_out, "w", encoding="utf-8") as fh:
+                fh.write(output)
+        else:
+            print(output, end="")
+        return 0
+    if args.uptime_report:
+        path = history_path(cfg, args)
+        history = load_history(path, maxlen=cfg.get("history", 100))
+        snapshot = uptime_snapshot(history, cfg.get("endpoints", []))
+        output = render_uptime_report(snapshot)
+        if args.uptime_out:
+            with open(args.uptime_out, "w", encoding="utf-8") as fh:
                 fh.write(output)
         else:
             print(output, end="")
