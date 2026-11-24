@@ -655,6 +655,39 @@ dashboard and in `GET /api/status`, and `--sla-alert [YYYY-MM]`
 fires the same alerts once from the command line and exits, for
 a cron job or a manual check.
 
+## Incident export
+
+`--incidents` exports the recorded incident history from the
+persisted history (needs `history_file` in the config, or
+`--history-file`) — every recorded outage per endpoint, newest
+first, with per-endpoint incident counts and total downtime,
+and totals across endpoints. An ongoing incident has `end`
+`null` and its duration running to the export time. The export
+is built from the same `History.recent_incidents()` the
+dashboard, `GET /api/status`, `GET /api/incidents`, and the
+static status page use, so it can never disagree with them.
+
+```sh
+python3 -m healthcheck.cli --config config.json --incidents
+```
+
+```
+Incident report (generated 2026-11-24 09:01:11)
+  api: 2 incidents (1 ongoing), 334661.1s total downtime
+    2026-11-20 12:05:00 – ongoing (334571.1s, 1 check)
+    2026-11-20 12:01:00 – 2026-11-20 12:02:30 (90.0s, 1 check)
+2 incidents total (1 ongoing), 334661.1s total downtime
+```
+
+`--incidents-format csv` / `json` exports the same incidents
+instead (with `--incidents-out PATH` to write it to a file).
+The CSV has one row per incident (`endpoint, start, end,
+ongoing, duration_s, checks`, with `end` empty for an ongoing
+incident); the JSON is `{"generated_at", "endpoints": [...],
+"totals": {...}}` with the full incident list and the
+per-endpoint counts (`total_incidents`, `ongoing_incidents`,
+`total_downtime_seconds`) plus the totals across endpoints.
+
 ## Tests
 
 ```sh
@@ -900,8 +933,33 @@ make test   # python3 -m unittest discover -s tests -v
   confirmed-down checks) from the same grouping the incident
   lists use, so the counter and the lists can never disagree;
   always present, even at 0 — done in 0.36.0.
+- [x] `--incidents` CLI export: `--incidents` exports the
+  recorded incident history — every recorded outage per
+  endpoint, newest first, with per-endpoint incident counts and
+  total downtime, and totals across endpoints — as plain text
+  (default), CSV (one row per incident, `--incidents-format
+  csv`), or JSON (`--incidents-format json`), with
+  `--incidents-out PATH` to write it to a file. An ongoing
+  incident has `end` `null` and its duration running to the
+  export time. Built from the same `History.recent_incidents()`
+  the dashboard, `GET /api/status`, `GET /api/incidents`, and
+  the static status page use, so the export can never disagree
+  with them — done in 0.37.0.
 
 ## Changelog
+
+- **0.37.0** — `--incidents` CLI export: `--incidents` exports
+  the recorded incident history — every recorded outage per
+  endpoint, newest first, with per-endpoint incident counts and
+  total downtime, and totals across endpoints — as plain text
+  (default), CSV (one row per incident), or JSON, with
+  `--incidents-out PATH` to write it to a file. An ongoing
+  incident has `end` `null` and its duration running to the
+  export time. Built from the same `History.recent_incidents()`
+  the dashboard, `GET /api/status`, `GET /api/incidents`, and
+  the static status page use, so the export can never disagree
+  with them; `--incidents-format` and `--incidents-out` without
+  `--incidents` are rejected, like the SLA flags.
 
 - **0.36.0** — Incidents total in the Prometheus export: `GET
   /metrics` gains a `healthcheck_incidents_total` counter per

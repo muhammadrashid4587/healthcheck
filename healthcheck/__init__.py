@@ -10,7 +10,7 @@ fires one webhook alert for the month, and the breach shows on the
 dashboard and in GET /api/status.
 """
 
-__version__ = "0.36.0"
+__version__ = "0.37.0"
 
 from .alerts import (SlaBreachAlerter, WebhookAlerter, alert_payload,
                      post_alert, sla_breach_payload)
@@ -32,6 +32,9 @@ from .digest import (DEFAULT_DIGEST_INTERVAL_SECONDS, DigestAlerter,
                      resolve_smtp_config, send_digest_email,
                      validate_digest_config)
 from .flap import DEFAULT_THRESHOLD, FlapDetector, FlapOutcome
+from .incidents import (incidents_report, render_incidents_report,
+                        render_incidents_report_csv,
+                        render_incidents_report_json)
 from .maintenance import (active_window, in_maintenance, summarize_windows,
                           validate_maintenance_windows)
 from .remote import ApiStatusHistory, fetch_remote_status
@@ -71,6 +74,7 @@ __all__ = [
     "format_check_line",
     "format_duration",
     "in_maintenance",
+    "incidents_report",
     "incidents_snapshot",
     "install_reload_handler",
     "load_status_page_source",
@@ -86,6 +90,9 @@ __all__ = [
     "recent_incidents",
     "reload_config",
     "render_digest_email",
+    "render_incidents_report",
+    "render_incidents_report_csv",
+    "render_incidents_report_json",
     "render_metrics",
     "render_sla_report",
     "render_sla_report_csv",

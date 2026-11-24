@@ -29,6 +29,9 @@ from .checker import (check_endpoint_with_retry, maintenance_result,
                       skipped_result)
 from .digest import DigestAlerter, validate_digest_config
 from .flap import DEFAULT_THRESHOLD, FlapDetector, validate_threshold
+from .incidents import (incidents_report, render_incidents_report,
+                        render_incidents_report_csv,
+                        render_incidents_report_json)
 from .maintenance import (active_window, summarize_window,
                           validate_maintenance_windows)
 from .remote import fetch_remote_status
@@ -1328,6 +1331,19 @@ def main(argv=None):
     parser.add_argument("--sla-out", default=None, metavar="PATH",
                         help="write the --sla-report output to PATH "
                              "instead of printing it")
+    parser.add_argument("--incidents", action="store_true",
+                        help="export the recorded incident history "
+                             "(the same incidents the dashboard, GET "
+                             "/api/incidents, and the static status "
+                             "page show) and exit")
+    parser.add_argument("--incidents-format", default="text",
+                        choices=["text", "csv", "json"],
+                        help="format for --incidents: plain text "
+                             "(default), CSV (one row per incident), "
+                             "or JSON")
+    parser.add_argument("--incidents-out", default=None, metavar="PATH",
+                        help="write the --incidents output to PATH "
+                             "instead of printing it")
     parser.add_argument("--sla-alert", default=None, nargs="?",
                         const="current", metavar="YYYY-MM",
                         help="fire a webhook alert for every endpoint "
@@ -1343,6 +1359,10 @@ def main(argv=None):
         parser.error("--status-page-source needs --status-page")
     if (args.sla_format != "text" or args.sla_out) and not args.sla_report:
         parser.error("--sla-format and --sla-out need --sla-report")
+    if (args.incidents_format != "text" or args.incidents_out) \
+            and not args.incidents:
+        parser.error("--incidents-format and --incidents-out need "
+                     "--incidents")
     cfg = load_config(args.config)
     try:
         apply_expect_status_overrides(cfg, args)
@@ -1371,6 +1391,22 @@ def main(argv=None):
             output = render_sla_report(report, year, month)
         if args.sla_out:
             with open(args.sla_out, "w", encoding="utf-8") as fh:
+                fh.write(output)
+        else:
+            print(output, end="")
+        return 0
+    if args.incidents:
+        path = history_path(cfg, args)
+        history = load_history(path, maxlen=cfg.get("history", 100))
+        report = incidents_report(history, cfg.get("endpoints", []))
+        if args.incidents_format == "csv":
+            output = render_incidents_report_csv(report)
+        elif args.incidents_format == "json":
+            output = render_incidents_report_json(report)
+        else:
+            output = render_incidents_report(report)
+        if args.incidents_out:
+            with open(args.incidents_out, "w", encoding="utf-8") as fh:
                 fh.write(output)
         else:
             print(output, end="")
