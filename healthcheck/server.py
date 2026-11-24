@@ -135,7 +135,13 @@ def status_snapshot(history, endpoints, now=None,
     "duration_s"}, grouped the same way as the static status
     page's incident list, so the API and the page can never
     disagree; an ongoing incident has "end" None and its duration
-    runs to `now`.
+    runs to `now`. "duration_histogram" buckets those same
+    incidents by duration into the 7 log-spaced buckets the
+    `--incidents` text report prints, from
+    `History.incident_duration_histogram()` with the same limit
+    of 5, so the histogram can never disagree with the incidents
+    listed above it — an endpoint with no incidents gets all
+    zeroes, not an omitted field.
     "cert_expires_at" is the epoch second the endpoint's TLS
     certificate expires (the most recent check that could read
     it), or None when the endpoint is not HTTPS, was never
@@ -237,6 +243,8 @@ def status_snapshot(history, endpoints, now=None,
             "sla_breach_alerted_at": alerted_at,
             "down_since": history.down_since(name),
             "recent_incidents": history.recent_incidents(name, now=now),
+            "duration_histogram": history.incident_duration_histogram(
+                name, limit=5, now=now),
         })
     snapshot = {"generated_at": time.time(), "endpoints": out}
     if status_page_sources is not None:

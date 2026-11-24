@@ -137,8 +137,8 @@ endpoint, and serves a small status dashboard over `http.server`.
   it fired show on the dashboard and in `GET /api/status`.
 - A JSON API: `GET /api/status` on the dashboard server returns the
   same data as JSON (status, uptime all-time / 24h / 7d, latency,
-  last check, recent incidents, dependency, maintenance windows per
-  endpoint), so scripts and other tools can consume the live status
+  last check, recent incidents and their duration histogram,
+  dependency, maintenance windows per endpoint), so scripts and other tools can consume the live status
   without scraping the HTML. `GET /api/incidents` returns just the
   recent incidents per endpoint (newest first, at most 5, an ongoing
   incident's duration running to now) — `?endpoint=NAME` filters to
@@ -629,7 +629,12 @@ in the current run of failures, unconfirmed ones included — or
 `{"start", "end", "checks", "ongoing", "duration_s"}`, grouped the
 same way as the static status page's incident list, so the API and
 the page can never disagree; an ongoing incident has `end` `null`
-and its duration runs to the snapshot time), and
+and its duration runs to the snapshot time), `duration_histogram`
+(those same incidents bucketed by duration into the 7 log-spaced
+buckets the `--incidents` text report prints — each `{"label",
+"min_s", "max_s", "count"}`, all 7 buckets present even at 0, so
+an endpoint with no incidents gets all zeroes and the histogram
+can never disagree with the incidents listed above it), and
 `last_checked_at` (epoch seconds, or `null` when never checked) —
 plus a `status_page_sources` list (`{"label", "path"|"url"}` per
 merged source), so a consumer can see what the static status page
@@ -1098,9 +1103,30 @@ make test   # python3 -m unittest discover -s tests -v
   of 5 as the incidents listed, so the static page, the
   dashboard, the text report, and the JSON export can never
   disagree — done in 0.43.0.
+- [x] Duration histogram in the JSON API: `GET /api/status`
+  gains `duration_histogram` per endpoint — the same 7
+  log-spaced buckets the `--incidents` text report prints,
+  from `History.incident_duration_histogram()` with the same
+  limit of 5 as the `recent_incidents` listed, so the API, the
+  dashboard, the static status page, the text report, and the
+  JSON export can never disagree. All 7 buckets are always
+  present, even at 0, so an endpoint with no incidents gets
+  all zeroes instead of an omitted field — done in 0.44.0.
 
 ## Changelog
 
+- **0.44.0** — Per-incident duration histogram in the JSON
+  API: `GET /api/status` gains `duration_histogram` per
+  endpoint — the same 7 log-spaced buckets (`< 1m`, `1m – 5m`,
+  `5m – 15m`, `15m – 1h`, `1h – 6h`, `6h – 24h`, `> 24h`) the
+  `--incidents` text report prints, from
+  `History.incident_duration_histogram()` with the same limit
+  of 5 as the `recent_incidents` listed alongside it, so the
+  histogram can never disagree with the incidents above it.
+  An ongoing incident's duration runs to the snapshot time in
+  both, and all 7 buckets are always present even at 0 — an
+  endpoint with no incidents gets all zeroes, not an omitted
+  field.
 - **0.43.0** — Per-incident duration histogram on the static
   status page's "Recent incidents" section: each endpoint's
   section shows its incidents bucketed by duration into the

@@ -156,6 +156,53 @@ class StatusApiTests(unittest.TestCase):
         # An endpoint that never failed has no incidents.
         self.assertEqual(by_name["web"]["recent_incidents"], [])
 
+    def test_snapshot_reports_duration_histogram(self):
+        hist = History()
+        hist.record(_result("db", True, at=1_700_000_000.0))
+        hist.record(_result("db", False, at=1_700_000_060.0))
+        hist.record(_result("db", False, at=1_700_000_120.0))
+        hist.record(_result("db", True, at=1_700_000_180.0))
+        snap = status_snapshot(hist, self.endpoints)
+        by_name = self._by_name(snap)
+        counts = {b["label"]: b["count"]
+                  for b in by_name["db"]["duration_histogram"]}
+        # The one 120 s incident lands in "1m – 5m".
+        self.assertEqual(counts, {
+            "< 1m": 0, "1m – 5m": 1, "5m – 15m": 0, "15m – 1h": 0,
+            "1h – 6h": 0, "6h – 24h": 0, "> 24h": 0})
+        # An endpoint with no incidents gets all zeroes, 7 buckets.
+        web_hist = by_name["web"]["duration_histogram"]
+        self.assertEqual(len(web_hist), 7)
+        self.assertTrue(all(b["count"] == 0 for b in web_hist))
+
+    def test_snapshot_histogram_uses_same_limit_and_now(self):
+        hist = History()
+        # Six closed 30 s incidents: only the newest five count,
+        # like the five incidents the API lists.
+        for i in range(6):
+            start = 1_700_000_000.0 + i * 1000
+            hist.record(_result("db", True, at=start - 60))
+            hist.record(_result("db", False, at=start))
+            hist.record(_result("db", True, at=start + 30))
+        snap = status_snapshot(hist, self.endpoints)
+        by_name = self._by_name(snap)
+        self.assertEqual(len(by_name["db"]["recent_incidents"]), 5)
+        counts = {b["label"]: b["count"]
+                  for b in by_name["db"]["duration_histogram"]}
+        self.assertEqual(sum(counts.values()), 5)
+        self.assertEqual(counts["< 1m"], 5)
+        # An ongoing incident's duration runs to `now` in both.
+        hist = History()
+        hist.record(_result("db", False, at=1_700_000_000.0))
+        snap = status_snapshot(hist, self.endpoints, now=1_700_003_600.0)
+        by_name = self._by_name(snap)
+        self.assertEqual(
+            by_name["db"]["recent_incidents"][0]["duration_s"], 3600.0)
+        counts = {b["label"]: b["count"]
+                  for b in by_name["db"]["duration_histogram"]}
+        self.assertEqual(counts["1h – 6h"], 1)
+        self.assertEqual(sum(counts.values()), 1)
+
     def test_snapshot_ongoing_incident_duration_uses_now(self):
         hist = History()
         hist.record(_result("db", False, at=1_700_000_000.0))
