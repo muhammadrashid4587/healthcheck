@@ -4,7 +4,9 @@ HTML file that can be hosted anywhere with no server.
 `render_status_page` builds the same view as the live dashboard —
 current status per endpoint, uptime all-time / 24h / 7d, most recent
 latency, an inline latency sparkline — plus a recent-incidents list
-per endpoint, derived from the persisted check history. The output
+per endpoint, derived from the persisted check history, and each
+endpoint's per-incident duration histogram over those same
+incidents. The output
 has no external references (no scripts, stylesheets, images or links
 to other hosts), so the file works from any static host or straight
 off disk. It is a snapshot: regenerate it to update it.
@@ -25,7 +27,8 @@ from .server import latency_sparkline
 DEFAULT_INCIDENT_LIMIT = 5
 
 
-def recent_incidents(history, name, limit=DEFAULT_INCIDENT_LIMIT):
+def recent_incidents(history, name, limit=DEFAULT_INCIDENT_LIMIT,
+                     now=None):
     """Recent outage incidents for an endpoint, newest first.
 
     Consecutive confirmed-down checks form one incident: it starts
@@ -38,9 +41,12 @@ def recent_incidents(history, name, limit=DEFAULT_INCIDENT_LIMIT):
     be a real passing check.
 
     The grouping lives on History so the dashboard API can report
-    the same incidents; this is a thin wrapper over it.
+    the same incidents; this is a thin wrapper over it. `now` is
+    the reference time an ongoing incident's duration runs to —
+    the status page passes its generated time, so the list and
+    the histogram over it share one reference time.
     """
-    return history.recent_incidents(name, limit=limit)
+    return history.recent_incidents(name, limit=limit, now=now)
 
 
 def endpoint_status(history, name):
@@ -113,7 +119,7 @@ def _render_source(history, endpoints, generated, label=None):
             f"<td>{up}</td><td>{day}</td><td>{week}</td><td>{latency}</td>"
             f"<td>{latency_sparkline(history, name)}</td><td>{last}</td></tr>"
         )
-        incidents = recent_incidents(history, name)
+        incidents = recent_incidents(history, name, now=generated)
         if incidents:
             items = []
             for incident in incidents:
@@ -127,8 +133,20 @@ def _render_source(history, endpoints, generated, label=None):
                     f"({_fmt_duration(incident['duration_s'])}, "
                     f"{incident['checks']} failed check"
                     f"{'s' if incident['checks'] != 1 else ''})</li>")
+            # The endpoint's duration histogram over exactly these
+            # incidents — the same 7 log-spaced buckets the
+            # --incidents text report prints and the dashboard
+            # shows, from History.incident_duration_histogram()
+            # with the same limit, so the histogram can never
+            # disagree with the incidents listed above it.
+            histogram = history.incident_duration_histogram(
+                name, limit=DEFAULT_INCIDENT_LIMIT, now=generated)
+            buckets = ", ".join(
+                f"{html.escape(bucket['label'])}: {bucket['count']}"
+                for bucket in histogram)
             incident_sections.append(
-                f"<h3>{html.escape(name)}</h3><ul>{''.join(items)}</ul>")
+                f"<h3>{html.escape(name)}</h3><ul>{''.join(items)}</ul>"
+                f"<p>Duration histogram: {buckets}</p>")
     body = "\n".join(rows) or \
         "<tr><td colspan=\"8\">No endpoints configured.</td></tr>"
     if down_count:

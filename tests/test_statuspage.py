@@ -148,6 +148,44 @@ class RenderTests(unittest.TestCase):
         self.assertIn("Recent incidents", page)
         self.assertIn("1 failed check", page)
 
+    def test_histogram_shown_for_endpoint_with_incidents(self):
+        # web's one closed incident lasts exactly 60 s, so it lands
+        # in "1m – 5m" (lower edge inclusive); db's ongoing incident
+        # is 200 s old at the page's generated time, so it lands
+        # there too. Both endpoints get a histogram, so the page
+        # has two — one per endpoint with incidents.
+        page = render_status_page(self.history, self.endpoints, now=BASE + 200)
+        buckets = ("&lt; 1m: 0, 1m – 5m: 1, 5m – 15m: 0, "
+                   "15m – 1h: 0, 1h – 6h: 0, 6h – 24h: 0, "
+                   "&gt; 24h: 0")
+        self.assertEqual(page.count("Duration histogram:"), 2)
+        self.assertEqual(page.count(
+            f"Duration histogram: {buckets}"), 2)
+
+    def test_no_histogram_for_endpoint_without_incidents(self):
+        hist = History()
+        hist.record(_result("web", True, at=BASE))
+        hist.record(_result("web", False, at=BASE + 60))
+        hist.record(_result("web", True, at=BASE + 120))
+        hist.record(_result("api", True, at=BASE))
+        hist.record(_result("api", True, at=BASE + 60))
+        page = render_status_page(
+            hist, self.endpoints[:1] + [
+                {"name": "api", "type": "http",
+                 "url": "http://api.example.com"}], now=BASE + 200)
+        # One histogram only: the endpoint with no incidents gets
+        # no histogram section, and its bucket counts are all zero
+        # nowhere in the page.
+        self.assertEqual(page.count("Duration histogram:"), 1)
+        self.assertIn("&lt; 1m: 0, 1m – 5m: 1", page)
+
+    def test_histogram_labels_are_html_escaped(self):
+        page = render_status_page(self.history, self.endpoints, now=BASE + 200)
+        self.assertIn("&lt; 1m", page)
+        self.assertIn("&gt; 24h", page)
+        self.assertNotIn("< 1m:", page)
+        self.assertNotIn("> 24h:", page)
+
     def test_no_incidents_message_when_none(self):
         hist = History()
         hist.record(_result("web", True, at=BASE))

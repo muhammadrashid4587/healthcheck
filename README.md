@@ -1090,9 +1090,28 @@ make test   # python3 -m unittest discover -s tests -v
   of 5 as the incidents listed, so the dashboard, the text
   report, the JSON export and the API can never disagree —
   done in 0.42.0.
+- [x] Duration histogram on the static status page: each
+  endpoint's "Recent incidents" section shows the same
+  per-endpoint duration histogram the `--incidents` report
+  prints and the dashboard shows, from
+  `History.incident_duration_histogram()` with the same limit
+  of 5 as the incidents listed, so the static page, the
+  dashboard, the text report, and the JSON export can never
+  disagree — done in 0.43.0.
 
 ## Changelog
 
+- **0.43.0** — Per-incident duration histogram on the static
+  status page's "Recent incidents" section: each endpoint's
+  section shows its incidents bucketed by duration into the
+  same 7 log-spaced buckets the `--incidents` text report
+  prints, from `History.incident_duration_histogram()` with
+  the same limit of 5 as the incidents listed, so the static
+  page, the dashboard, the text report, and the JSON export can
+  never disagree. The incident list and the histogram share the
+  page's generated time as their reference, so an ongoing
+  incident's duration is the same in both. An endpoint with no
+  incidents gets no histogram, like on the dashboard.
 - **0.42.0** — Per-incident duration histogram on the live
   dashboard's "Recent incidents" section: each endpoint's
   subsection shows its incidents bucketed by duration into the
