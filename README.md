@@ -43,7 +43,10 @@ endpoint, and serves a small status dashboard over `http.server`.
   no alert fires, and no dashboard starts, so it is safe to run
   from a deploy script or CI. A single failed check is DOWN here:
   the flap threshold needs repeated rounds and does not apply to
-  a one-shot pass.
+  a one-shot pass. The retry rule does apply: a first-attempt
+  failure is retried once, and the line prints "(retried once)"
+  when a retry happened, so the dry run judges the same outcome
+  the monitor would record.
 - Per-endpoint check intervals (`check_interval_s`): an endpoint
   can define its own cadence (e.g. every 10 s for a flaky
   dependency, every 10 minutes for a slow-changing page) instead
@@ -63,6 +66,13 @@ endpoint, and serves a small status dashboard over `http.server`.
 - Flap detection: an endpoint only flips to DOWN (and only alerts)
   after 3 consecutive failed checks by default — a single blip is
   logged, not paged. The threshold is configurable per config.
+- Retry once before a failure counts: when a check fails it is
+  immediately retried once, and only a second consecutive failure
+  counts as DOWN for flap, alert, and uptime purposes — a blip
+  that recovers on the retry is recorded as UP, with the retry
+  noted in the history, on the dashboard, and in `GET /api/status`.
+  Retries are on by default and can be disabled globally or per
+  endpoint (`retry_on_failure`), or with `--no-retry-on-failure`.
 - Maintenance windows: an endpoint can declare recurring weekly
   windows (`maintenance_windows`) during which it is not checked at
   all — no alert fires, no flap state changes, and uptime is
@@ -250,6 +260,26 @@ normally without it.
   UP on the dashboard. A success at any point resets the count; a
   success after a confirmed outage is a recovery. Must be a
   positive integer. The `--flap-threshold` flag overrides it.
+- `retry_on_failure` — retry a failed check once before it counts
+  (default true, either type, or globally in the config). When a
+  check fails it is immediately retried once, on the same endpoint
+  with the same check; only a second consecutive failure counts as
+  DOWN for flap, alert, and uptime purposes. A first-attempt
+  failure that recovers on the retry is recorded as UP, with
+  `retries: 1` on the check — the retry is part of the same check
+  round, not a second check, so one history entry is recorded and
+  the endpoint's next-due time (its `check_interval_s` cadence)
+  is not reset by it. The retry count is visible per endpoint in
+  the check history, on the dashboard (Retries column), and in
+  `GET /api/status` (`retries` for the most recent check,
+  `retries_total` across the recorded history). Set `false`
+  globally to disable retries for every endpoint, or per endpoint
+  to disable them for just that one (the per-endpoint value wins);
+  the `--no-retry-on-failure` flag disables them for the run. A
+  non-bool value is rejected at config load, and a SIGHUP reload
+  picks up changes. Dry-run mode (`--check`) applies the same
+  rule and prints "(retried once)" on the line when a retry
+  happened.
 - `history` — checks kept per endpoint (default 100).
 - `history_file` — path to a JSON file for persisting check history
   across restarts (optional; default is in-memory only). The
@@ -427,7 +457,10 @@ when it has none), the endpoint's own check interval
 (`check_interval_s`, or `-` when it uses the global interval),
 a latency p50 / p95 / p99 column (nearest-rank percentiles
 over the last 24 hours, `-` when no checks ran in that window), a sparkline
-of the last 20 recorded latencies, the error string of the endpoint's
+of the last 20 recorded latencies, a Retries column (retries spent
+on the most recent recorded check — `1` when a first-attempt
+failure recovered on the retry, `0` when the first attempt decided
+it, `-` when never checked), the error string of the endpoint's
 most recent failed check (the Last error column, `-` when it never
 failed — it stays after a later success, so a recovered endpoint
 still shows why it last failed), and last check
@@ -452,6 +485,10 @@ no checks fall in that window), `latency_ms` (most recent, or `null`),
 within, or `null` when it has none),
 `check_interval_s` (the endpoint's own check interval in seconds,
 or `null` when it uses the global `interval_seconds`),
+`retries` (retries spent on the most recent recorded check — `0`
+when the first attempt decided it, `1` when a first-attempt failure
+recovered on the retry — or `null` when never checked) and
+`retries_total` (retries spent across the recorded history),
 `latency_percentiles` (`{"p50", "p95", "p99"}` in ms over the
 last 24 hours, or `null` when no checks ran in that window),
 `last_error` (the error string of the most recent failed check
@@ -649,8 +686,36 @@ make test   # python3 -m unittest discover -s tests -v
   validated at load and on SIGHUP reload; the dashboard gains a
   Check every column and `GET /api/status` gains
   `check_interval_s` per endpoint — done in 0.27.0.
+- [x] Retry once before a failure counts (`retry_on_failure`):
+  when a check fails it is immediately retried once, and only a
+  second consecutive failure counts as DOWN for flap, alert, and
+  uptime purposes; a blip that recovers on the retry is recorded
+  as UP with the retry noted. On by default, disabled globally or
+  per endpoint in the config or with `--no-retry-on-failure`; the
+  retry is part of the same check round, so one history entry is
+  recorded and the endpoint's next-due time is not reset. The
+  dashboard gains a Retries column and `GET /api/status` gains
+  `retries` / `retries_total` per endpoint; `--check` applies the
+  same rule and prints "(retried once)" when a retry happened —
+  done in 0.28.0.
 
 ## Changelog
+
+- **0.28.0** — Retry once before a failure counts: when a check
+  fails it is immediately retried once, on the same endpoint with
+  the same check, and only a second consecutive failure counts as
+  DOWN for flap, alert, and uptime purposes. A first-attempt
+  failure that recovers on the retry is recorded as UP, with
+  `retries: 1` on the check — the retry is part of the same check
+  round, not a second check, so one history entry is recorded and
+  the endpoint's next-due time is not reset by it. Retries are on
+  by default; set `retry_on_failure` to `false` globally or per
+  endpoint to disable them, or pass `--no-retry-on-failure` for
+  the run. A bad value is rejected at config load, and a SIGHUP
+  reload picks up changes. The dashboard gains a Retries column
+  and `GET /api/status` gains `retries` / `retries_total` per
+  endpoint; `--check` applies the same rule and prints "(retried
+  once)" on the line when a retry happened.
 
 - **0.27.0** — Per-endpoint check intervals: an endpoint can set
   `check_interval_s` (e.g. 60) in the config, and it is checked

@@ -25,7 +25,8 @@ import threading
 import time
 
 from .alerts import WebhookAlerter
-from .checker import check_endpoint, maintenance_result, skipped_result
+from .checker import (check_endpoint_with_retry, maintenance_result,
+                      skipped_result)
 from .digest import DigestAlerter, validate_digest_config
 from .flap import DEFAULT_THRESHOLD, FlapDetector, validate_threshold
 from .maintenance import (active_window, summarize_window,
@@ -58,6 +59,7 @@ def load_config(path):
     validate_expect_status(endpoints)
     validate_latency_budgets(endpoints)
     validate_check_intervals(endpoints)
+    validate_retry_settings(cfg, endpoints)
     validate_maintenance_windows(endpoints)
     validate_sla_targets(endpoints)
     validate_endpoint_webhooks(endpoints)
@@ -270,6 +272,48 @@ def validate_check_intervals(endpoints):
             raise ValueError(
                 f"endpoint {ep['name']!r}: check_interval_s must be a "
                 f"positive number of seconds, not {value!r}")
+
+
+def validate_retry_settings(cfg, endpoints):
+    """Reject bad `retry_on_failure` entries at config load.
+
+    Retries are on by default: a failed check is immediately retried
+    once, and only a second consecutive failure counts as DOWN. The
+    setting can be disabled globally (`retry_on_failure` in the
+    config) or per endpoint (the endpoint's own `retry_on_failure`
+    wins over the global one). Either value must be a bool, not a
+    string or a number — a truthy-looking "false" must not silently
+    enable retries. Raises ValueError with a clear message; the
+    monitor refuses to start rather than run with a retry setting
+    it cannot judge.
+    """
+    global_value = cfg.get("retry_on_failure")
+    if global_value is not None and not isinstance(global_value, bool):
+        raise ValueError(
+            f"retry_on_failure must be true or false, not "
+            f"{global_value!r}")
+    for ep in endpoints:
+        value = ep.get("retry_on_failure")
+        if value is not None and not isinstance(value, bool):
+            raise ValueError(
+                f"endpoint {ep['name']!r}: retry_on_failure must be "
+                f"true or false, not {value!r}")
+
+
+def retry_enabled(cfg, ep, args=None):
+    """Whether a failed check of `ep` is retried once before it counts.
+
+    Default on. The --no-retry-on-failure flag disables retries for
+    every endpoint; otherwise a per-endpoint `retry_on_failure`
+    wins over the global `retry_on_failure` in the config, which
+    defaults to True when absent.
+    """
+    if getattr(args, "no_retry_on_failure", False):
+        return False
+    value = ep.get("retry_on_failure")
+    if value is not None:
+        return value
+    return cfg.get("retry_on_failure", True)
 
 
 def endpoint_interval(cfg, ep):
@@ -737,7 +781,7 @@ def _dependency_state(name, results, history):
 
 
 def check_all(endpoints, history, timeout=5.0, alerter=None,
-              flap_detector=None, now=None, only=None):
+              flap_detector=None, now=None, only=None, retry=None):
     """One check round over all endpoints, dependencies first.
 
     `only`, when given, is a set of endpoint names to check this
@@ -748,6 +792,18 @@ def check_all(endpoints, history, timeout=5.0, alerter=None,
     this round is still judged: `_dependency_state` falls back to
     the dependency's last recorded check, so a down dependency
     still skips it and a recovered one lets it run.
+
+    `retry` decides whether a failed check is retried once before
+    it counts: None (the default) retries every endpoint, a bool
+    applies to all of them, and a callable is asked per endpoint
+    (see `retry_enabled`). A first-attempt failure that recovers on
+    the retry is recorded as UP with `retries=1` — a single blip
+    is not downtime, never reaches the flap detector, and costs no
+    uptime. Only when the retry fails too is the failure recorded,
+    with `retries=1` and the retry's error. The retry is part of
+    the same round, not a second check: one history entry is
+    recorded either way, and the endpoint's next-due time is
+    computed from the round, so a retry never resets the schedule.
 
     An endpoint inside a maintenance window is not checked at all:
     the round is recorded as maintenance, so the dashboard shows
@@ -799,7 +855,10 @@ def check_all(endpoints, history, timeout=5.0, alerter=None,
                 results[name] = result
                 log.info("%s SKIPPED (%s)", name, result.error)
                 continue
-        result = check_endpoint(ep, timeout=timeout)
+        result = check_endpoint_with_retry(
+            ep, timeout=timeout,
+            retry=True if retry is None else
+            (retry(ep) if callable(retry) else bool(retry)))
         if dep is not None:
             result = dataclasses.replace(result, depends_on=dep)
         budget = ep.get("max_latency_ms")
@@ -831,18 +890,20 @@ def check_all(endpoints, history, timeout=5.0, alerter=None,
                 else dataclasses.replace(result, ok=True)
             alerter.notify(effective)
         if result.ok:
-            log.info("%s UP %.1f ms", result.name, result.latency_ms)
+            log.info("%s UP %.1f ms%s", result.name, result.latency_ms,
+                     _retry_suffix(result))
         elif outcome.confirmed_down:
             detail = (f"HTTP {result.status_code}" if result.status_code
                       else (result.error or ""))
-            log.info("%s DOWN %.1f ms %s", result.name,
-                     result.latency_ms, detail)
+            log.info("%s DOWN %.1f ms %s%s", result.name,
+                     result.latency_ms, detail, _retry_suffix(result))
         else:
             detail = (f"HTTP {result.status_code}" if result.status_code
                       else (result.error or ""))
-            log.info("%s DOWN (unconfirmed %d/%d) %.1f ms %s", result.name,
+            log.info("%s DOWN (unconfirmed %d/%d) %.1f ms %s%s", result.name,
                      outcome.consecutive_failures,
-                     flap_detector.threshold, result.latency_ms, detail)
+                     flap_detector.threshold, result.latency_ms, detail,
+                     _retry_suffix(result))
     return results
 
 
@@ -888,6 +949,16 @@ def check_verdict(result):
     return "DOWN"
 
 
+def _retry_suffix(result):
+    """Readable retry note for a check result: "" when the first
+    attempt decided it, " (retried once)" when the retry did."""
+    if not getattr(result, "retries", 0):
+        return ""
+    if result.retries == 1:
+        return " (retried once)"
+    return f" (retried {result.retries} times)"
+
+
 def format_check_line(result):
     """One printable line for a dry-run result: verdict, status or
     the rule that fired, and latency.
@@ -895,7 +966,10 @@ def format_check_line(result):
     The error text already names the rule that failed the check —
     a latency budget breach, an expect_status mismatch, a body
     assertion, a dependency skip, a maintenance window — so the
-    operator sees why, not just that it is down.
+    operator sees why, not just that it is down. When the check
+    was retried, the line says so: a recovered endpoint reads UP
+    with "(retried once)", and a still-down one reads DOWN with
+    the same note, so the retry is visible in the dry run too.
     """
     verdict = check_verdict(result)
     if result.ok:
@@ -903,7 +977,8 @@ def format_check_line(result):
                   if result.status_code is not None else "")
         return (f"{result.name}: UP"
                 + (f" {detail}" if detail else "")
-                + f" {result.latency_ms:.1f} ms").strip()
+                + f" {result.latency_ms:.1f} ms"
+                + _retry_suffix(result)).strip()
     if verdict == "DOWN":
         if result.status_code is not None:
             detail = f"HTTP {result.status_code}"
@@ -913,11 +988,12 @@ def format_check_line(result):
             detail = result.error or ""
         return (f"{result.name}: DOWN"
                 + (f" {detail}" if detail else "")
-                + f" {result.latency_ms:.1f} ms").strip()
+                + f" {result.latency_ms:.1f} ms"
+                + _retry_suffix(result)).strip()
     return f"{result.name}: {verdict} {result.error or ''}".strip()
 
 
-def dry_run_check(endpoints, name=None):
+def dry_run_check(endpoints, name=None, retry=None):
     """One check pass over the selected endpoints, printed, nothing
     else: no history is written, no alert fires, no dashboard
     starts. Returns (results, exit_code): exit 0 when every checked
@@ -928,14 +1004,20 @@ def dry_run_check(endpoints, name=None):
     A dry run is a single pass, so the flap threshold does not
     apply: one failed check is DOWN here, where the monitor would
     call the same failure unconfirmed until the threshold's
-    consecutive failures. The check itself — status, body and
+    consecutive failures. The retry rule does apply, like in the
+    monitor: a first-attempt failure is retried once, and the line
+    says so — a recovered endpoint reads UP "(retried once)" — so
+    the dry run judges the same outcome the monitor would record.
+    `retry` is passed through to `check_all` (None retries every
+    endpoint; a bool or per-endpoint callable overrides that).
+    The check itself — status, body and
     latency-budget rules, dependencies, maintenance windows — is
     the same code the monitor runs.
     """
     targets = select_check_targets(endpoints, name)
     history = History()
     results = check_all(targets, history, alerter=None,
-                        flap_detector=FlapDetector(1))
+                        flap_detector=FlapDetector(1), retry=retry)
     for result in results.values():
         print(format_check_line(result))
     counts = {"UP": 0, "DOWN": 0, "SKIPPED": 0, "MAINTENANCE": 0}
@@ -1045,7 +1127,8 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
                if next_due.get(ep["name"], 0.0) <= now}
         if due:
             check_all(endpoints, history, alerter=alerter,
-                      flap_detector=detector, only=due)
+                      flap_detector=detector, only=due,
+                      retry=lambda ep: retry_enabled(state_cfg, ep, args))
             checked_at = time.time()
             for name in due:
                 ep = next(ep for ep in endpoints
@@ -1170,6 +1253,12 @@ def main(argv=None):
                              "interval_seconds (overrides the config "
                              "file's check_interval_s for that "
                              "endpoint; repeatable)")
+    parser.add_argument("--no-retry-on-failure", action="store_true",
+                        help="do not retry a failed check once before "
+                             "counting it as down (retries are on by "
+                             "default; a global retry_on_failure or a "
+                             "per-endpoint retry_on_failure in the "
+                             "config file disables them too)")
     parser.add_argument("--status-page", default=None, metavar="PATH",
                         help="write a self-contained static HTML status "
                              "page from the persisted check history to "
@@ -1220,7 +1309,9 @@ def main(argv=None):
     if args.check is not None:
         name = None if args.check == "__all__" else args.check
         try:
-            _, code = dry_run_check(cfg.get("endpoints", []), name)
+            _, code = dry_run_check(
+                cfg.get("endpoints", []), name,
+                retry=lambda ep: retry_enabled(cfg, ep, args))
         except ValueError as exc:
             parser.error(str(exc))
         return code
@@ -1229,7 +1320,8 @@ def main(argv=None):
         history = load_history(path, maxlen=cfg.get("history", 100))
         check_all(cfg.get("endpoints", []), history,
                   alerter=make_alerter(cfg, args),
-                  flap_detector=FlapDetector(flap_threshold(cfg, args)))
+                  flap_detector=FlapDetector(flap_threshold(cfg, args)),
+                  retry=lambda ep: retry_enabled(cfg, ep, args))
         save_history(history, path)
     if args.status_page:
         if history is None:

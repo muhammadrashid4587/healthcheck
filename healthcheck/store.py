@@ -36,6 +36,10 @@ class History:
             "depends_on": result.depends_on,
             "unconfirmed": result.unconfirmed,
             "maintenance": result.maintenance,
+            # Retries spent on this check (0 when the first attempt
+            # decided it). Entries written before retries existed
+            # carry no key and count as 0 wherever it is read.
+            "retries": getattr(result, "retries", 0),
         }
         self._checks.setdefault(result.name, deque(maxlen=self.maxlen)).append(entry)
         return entry
@@ -74,6 +78,16 @@ class History:
                     and entry.get("error") is not None):
                 return entry["error"]
         return None
+
+    def retries_total(self, name):
+        """Total retries spent on `name`'s recorded checks.
+
+        A retry is the second attempt after a first failure; entries
+        written before retries existed carry no "retries" key and
+        count as 0. Returns 0 when the endpoint was never checked.
+        """
+        return sum(c.get("retries", 0)
+                   for c in self._checks.get(name, []))
 
     def uptime_pct(self, name):
         """Share of recorded checks that were up, or None if no checks.

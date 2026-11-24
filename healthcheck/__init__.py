@@ -7,17 +7,20 @@ when an endpoint changes state, or a periodic digest that batches
 the changes into one summary (webhook and/or a rendered email body).
 """
 
-__version__ = "0.27.0"
+__version__ = "0.28.0"
 
-from .checker import (CheckResult, check_endpoint, check_http, check_tcp,
+from .checker import (CheckResult, check_endpoint,
+                      check_endpoint_with_retry, check_http, check_tcp,
                       maintenance_result)
 from .cli import (apply_check_interval_overrides, apply_max_latency_overrides,
                   dry_run_check, endpoint_interval, format_check_line,
                   install_reload_handler, load_status_page_source,
                   merged_status_page_sources, monitor_loop,
                   parse_check_interval, parse_max_latency, reload_config,
-                  select_check_targets, validate_check_intervals,
-                  validate_latency_budgets, validate_status_page_sources)
+                  retry_enabled, select_check_targets,
+                  validate_check_intervals, validate_latency_budgets,
+                  validate_retry_settings,
+                  validate_status_page_sources)
 from .digest import (DEFAULT_DIGEST_INTERVAL_SECONDS, DigestAlerter,
                      build_digest, render_digest_email,
                      resolve_smtp_config, send_digest_email,
@@ -48,6 +51,7 @@ __all__ = [
     "breaches",
     "build_digest",
     "check_endpoint",
+    "check_endpoint_with_retry",
     "check_http",
     "check_tcp",
     "dry_run_check",
@@ -72,6 +76,7 @@ __all__ = [
     "render_sla_report",
     "render_status_page",
     "resolve_smtp_config",
+    "retry_enabled",
     "latency_sparkline",
     "send_digest_email",
     "select_check_targets",
@@ -81,6 +86,7 @@ __all__ = [
     "validate_check_intervals",
     "validate_digest_config",
     "validate_latency_budgets",
+    "validate_retry_settings",
     "validate_sla_targets",
     "validate_status_page_sources",
     "validate_maintenance_windows",

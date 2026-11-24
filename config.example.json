@@ -11,6 +11,7 @@
       ],
       "max_latency_ms": 500,
       "name": "example",
+      "retry_on_failure": true,
       "sla_target": 99.9,
       "timeout": 5,
       "type": "http",

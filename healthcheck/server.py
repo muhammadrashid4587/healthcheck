@@ -81,7 +81,11 @@ def status_snapshot(history, endpoints, now=None,
     it stays after a later success, so it answers "why did it last
     fail"), "check_interval_s" (the endpoint's own check interval
     in seconds, or None when it uses the global `interval_seconds`),
-    and "last_checked_at"
+    "retries" (retries spent on the most recent recorded check — 0
+    when the first attempt decided it, 1 when a first-attempt
+    failure recovered on the retry — or None when never checked)
+    and "retries_total" (retries spent across the recorded history,
+    so a flapping endpoint's blips stay visible), and "last_checked_at"
     (epoch seconds, or None when never checked). When
     `status_page_sources` is given, the merged status page sources
     (the config file's `status_page_sources` plus any
@@ -129,6 +133,9 @@ def status_snapshot(history, endpoints, now=None,
             "latency_percentiles": history.latency_percentiles(name, now=now),
             "last_error": history.last_error(name),
             "check_interval_s": ep.get("check_interval_s"),
+            "retries": (cur.get("retries", 0) if cur is not None
+                        else None),
+            "retries_total": history.retries_total(name),
             "last_checked_at": last,
         })
     snapshot = {"generated_at": time.time(), "endpoints": out}
@@ -282,6 +289,8 @@ def render_dashboard(history, endpoints, now=None,
         interval = ep.get("check_interval_s")
         interval_text = (f"{interval:g} s" if interval is not None
                          else "-")
+        retries = cur.get("retries", 0) if cur is not None else None
+        retries_text = str(retries) if retries is not None else "-"
         # A breaching check still records its latency, so a slow
         # endpoint shows both numbers side by side: how slow it was
         # and what it was allowed to be.
@@ -310,12 +319,13 @@ def render_dashboard(history, endpoints, now=None,
             f"<td>{up}</td><td>{day}</td><td>{week}</td><td>{latency}</td>"
             f"<td>{budget_text}</td>"
             f"<td>{interval_text}</td>"
+            f"<td>{retries_text}</td>"
             f"<td>{pct_text}</td>"
             f"<td>{latency_sparkline(history, name)}</td>"
             f"<td>{html.escape(history.last_error(name) or '-')}</td>"
             f"<td>{last}</td></tr>"
         )
-    body = "\n".join(rows) or "<tr><td colspan=\"15\">No endpoints configured.</td></tr>"
+    body = "\n".join(rows) or "<tr><td colspan=\"16\">No endpoints configured.</td></tr>"
     if status_page_sources:
         items = "".join(
             f"<li>{html.escape(src['label'])} — "
@@ -328,7 +338,7 @@ def render_dashboard(history, endpoints, now=None,
 <html><head><meta charset="utf-8"><title>healthcheck</title>
 <style>body{{font-family:sans-serif;max-width:720px;margin:2em auto}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccc;padding:6px 10px;text-align:left}}.up{{color:green;font-weight:bold}}.down{{color:red;font-weight:bold}}.skipped{{color:#b8860b;font-weight:bold}}.maintenance{{color:#6a5acd;font-weight:bold}}</style>
 </head><body><h1>healthcheck</h1>
-<table><tr><th>Endpoint</th><th>Status</th><th>HTTP status</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Latency</th><th>Latency budget</th><th>Check every</th><th>Latency p50 / p95 / p99</th><th>Latency history</th><th>Last error</th><th>Last check</th></tr>
+<table><tr><th>Endpoint</th><th>Status</th><th>HTTP status</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Latency</th><th>Latency budget</th><th>Check every</th><th>Retries</th><th>Latency p50 / p95 / p99</th><th>Latency history</th><th>Last error</th><th>Last check</th></tr>
 {body}</table>
 {sources_html}<p>Rendered {time.strftime('%Y-%m-%d %H:%M:%S')} — reload to update.</p></body></html>"""
 

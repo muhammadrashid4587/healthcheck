@@ -6,6 +6,7 @@ raises for a failed endpoint — failure is data, not an exception.
 
 from __future__ import annotations
 
+import dataclasses
 import re
 import socket
 import ssl
@@ -36,6 +37,12 @@ class CheckResult:
     # The check never ran because the endpoint was in a maintenance
     # window: neither up nor down, no uptime penalty, no alert.
     maintenance: bool = False
+    # How many retries this check used: 0 when the first attempt
+    # decided it (or retries were off), 1 when the first attempt
+    # failed and the retry's result is the recorded one. A retry is
+    # part of the same check round, not a second check — only one
+    # history entry is recorded either way.
+    retries: int = 0
 
 
 def maintenance_result(name, summary):
@@ -239,3 +246,24 @@ def check_endpoint(endpoint, timeout=5.0):
                           expect_body_regex=endpoint.get("expect_body_regex"),
                           expect_status=endpoint.get("expect_status"))
     raise ValueError(f"unknown endpoint type: {kind!r}")
+
+
+def check_endpoint_with_retry(endpoint, timeout=5.0, retry=True):
+    """Check once; on failure, immediately retry once and keep the
+    retry's result.
+
+    A first-attempt failure that recovers on the retry is recorded
+    as UP with `retries=1` — a single blip is not downtime, and it
+    never reaches the flap detector as a failure. Only when the
+    retry fails too is the check DOWN, with `retries=1` and the
+    retry's error (the freshest failure). With `retry` False the
+    check runs once and `retries` is 0. The retry is part of the
+    same check round, not a second check: the caller records one
+    entry either way, and the endpoint's next-due time is computed
+    from the round, so a retry never resets the schedule.
+    """
+    result = check_endpoint(endpoint, timeout=timeout)
+    if result.ok or not retry:
+        return result
+    retried = check_endpoint(endpoint, timeout=timeout)
+    return dataclasses.replace(retried, retries=1)
