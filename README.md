@@ -126,7 +126,16 @@ endpoint, and serves a small status dashboard over `http.server`.
   and latency p50/p95/p99 over the month, so the report can go
   into a spreadsheet or a script. `GET /api/sla` on the
   dashboard server serves the same JSON live (current month,
-  or `?month=YYYY-MM` for another month).
+  or `?month=YYYY-MM` for another month). While the monitor
+  runs, a breach is also alerted: the first time a month's report
+  shows an endpoint below its target, one webhook POST goes out
+  with the breach details (see `webhook_url` below — an
+  endpoint's own `webhook` wins), so the breach is paged while
+  the month is still running, not only when someone prints the
+  report; the breach and when it was alerted show on the
+  dashboard and in `GET /api/status`. `--sla-alert [YYYY-MM]`
+  fires the same alerts once from the command line and exits,
+  for a cron job or a manual check.
 - Config hot-reload: while the monitor is running, edit
   `config.json` and send SIGHUP (`kill -HUP <pid>`); the new
   endpoints, check interval, per-endpoint check intervals,
@@ -314,6 +323,20 @@ normally without it.
   delivery is logged as a warning and never stops the monitor. With
   flap detection, the alert fires only when the outage is confirmed
   (see `flap_threshold` above), not on a single failed check.
+  The same URL also receives SLA breach alerts: when a month's SLA
+  report shows an endpoint below its `sla_target`, one POST goes
+  out per endpoint per month with
+  `{"type": "sla_breach", "endpoint", "month", "uptime_pct",
+  "checks", "incidents", "downtime_seconds", "target",
+  "shortfall_pct", "latency"}` — the first breach in a month fires
+  it, and later rounds in the same month do not re-fire, even if the
+  shortfall grows (the live shortfall stays visible on the dashboard
+  and in `GET /api/status`); a new month starts fresh. A failed
+  delivery is logged and the breach is still recorded as alerted,
+  like the digest — a failed alert is not re-sent. `--sla-alert
+  [YYYY-MM]` fires the same alerts once from the command line and
+  exits, for a cron job or a manual check (with no webhook
+  configured anywhere, it prints a note and sends nothing).
   An endpoint can set its own `webhook` URL instead: its
   state-change alerts go to its own channel, and its slice of the
   alert digest is POSTed there too (see `alert_digest` below) —
@@ -470,7 +493,11 @@ failure recovered on the retry, `0` when the first attempt decided
 it, `-` when never checked), the error string of the endpoint's
 most recent failed check (the Last error column, `-` when it never
 failed — it stays after a later success, so a recovered endpoint
-still shows why it last failed), and last check
+still shows why it last failed), an SLA breach column (`BREACH
+-X.Xpp` when the endpoint is below its `sla_target` in the current
+calendar month, with the time its breach alert fired when one went
+out, `-` otherwise — no target, no data, or meeting the target),
+and last check
 time. Skipped checks are recorded in history with the dependency that
 caused the skip, but they never count in uptime and never appear in
 the sparkline or the percentiles; maintenance rounds are excluded the same way. A failure below the flap threshold likewise never
@@ -501,7 +528,14 @@ last 24 hours, or `null` when no checks ran in that window),
 `last_error` (the error string of the most recent failed check
 that actually ran, or `null` when the endpoint never failed —
 skipped and maintenance rounds do not count, and it stays after
-a later success), and
+a later success), `sla_target` (the endpoint's configured SLA
+target, or `null`), `sla_breach` (whether the endpoint is below
+its target in the current calendar month — `false` when it meets
+it or has no target), `sla_shortfall_pct` (how far short it fell,
+or `null` when it did not breach), `sla_breach_alerted_at` (the
+epoch second its breach alert fired this month, or `null` when
+it has not fired — the same computation as `--sla-report`, so the
+live status and the report can never disagree), and
 `last_checked_at` (epoch seconds, or `null` when never checked) —
 plus a `status_page_sources` list (`{"label", "path"|"url"}` per
 merged source), so a consumer can see what the static status page
@@ -572,6 +606,16 @@ The same JSON is also served live while the monitor runs:
 month's report, and `GET /api/sla?month=2026-11` a past month
 (a bad month is a 400 with a JSON error). It is built from the
 same computation as the export, so the two can never disagree.
+
+A breach is also alerted, not just reported: while the monitor
+runs, each check round re-evaluates the current month, and the
+first time an endpoint falls below its target one webhook POST
+goes out with the breach details (see `webhook_url` above — an
+endpoint's own `webhook` wins, and with no webhook configured
+nothing is sent). The breach and when it was alerted show on the
+dashboard and in `GET /api/status`, and `--sla-alert [YYYY-MM]`
+fires the same alerts once from the command line and exits, for
+a cron job or a manual check.
 
 ## Tests
 
@@ -749,8 +793,43 @@ make test   # python3 -m unittest discover -s tests -v
   error. It reuses the export's payload builder, so the
   endpoint and `--sla-format json` can never disagree — done
   in 0.30.0.
+- [x] Webhook alerting on SLA breach: while the monitor runs,
+  each check round re-evaluates the current month's SLA report,
+  and the first time an endpoint falls below its `sla_target`
+  one webhook POST goes out with the breach details — the month,
+  the month's uptime and checks, the target and the shortfall,
+  incidents, downtime, and latency p50/p95/p99 — to the
+  endpoint's own `webhook` when it has one, else the global
+  `webhook_url`, reusing the state-change alert routing. One
+  alert per endpoint per month (a new month starts fresh, and a
+  SIGHUP reload does not re-fire one already sent); a failed
+  delivery is logged and never stops the monitor. The breach
+  and when it was alerted show on the dashboard (SLA breach
+  column) and in `GET /api/status` (`sla_target`,
+  `sla_breach`, `sla_shortfall_pct`, `sla_breach_alerted_at`),
+  computed from the same report rows, so the live status and
+  the report can never disagree. `--sla-alert [YYYY-MM]` fires
+  the same alerts once from the command line and exits, for a
+  cron job or a manual check — done in 0.31.0.
 
 ## Changelog
+
+- **0.31.0** — Webhook alerting on SLA breach: while the
+  monitor runs, each check round re-evaluates the current
+  month's SLA report, and the first time an endpoint falls
+  below its `sla_target` one webhook POST goes out with the
+  breach details (`type: "sla_breach"`, the endpoint, month,
+  uptime_pct, checks, incidents, downtime_seconds, target,
+  shortfall_pct, latency p50/p95/p99) — to the endpoint's own
+  `webhook` when it has one, else the global `webhook_url`.
+  One alert per endpoint per month; a new month starts fresh,
+  a SIGHUP reload does not re-fire one already sent, and a
+  failed delivery is logged and never stops the monitor. The
+  dashboard gains an SLA breach column and `GET /api/status`
+  gains `sla_target`, `sla_breach`, `sla_shortfall_pct`, and
+  `sla_breach_alerted_at` per endpoint, all computed from the
+  same report rows as `--sla-report`. `--sla-alert [YYYY-MM]`
+  fires the same alerts once from the command line and exits.
 
 - **0.30.0** — SLA report over HTTP: `GET /api/sla` on the
   dashboard server returns the monthly SLA report as JSON — the

@@ -24,7 +24,7 @@ import signal
 import threading
 import time
 
-from .alerts import WebhookAlerter
+from .alerts import SlaBreachAlerter, WebhookAlerter
 from .checker import (check_endpoint_with_retry, maintenance_result,
                       skipped_result)
 from .digest import DigestAlerter, validate_digest_config
@@ -733,6 +733,23 @@ def make_alerter(cfg, args):
     return inner
 
 
+def make_sla_alerter(cfg, args, records=None):
+    """An SlaBreachAlerter for the configured webhook, or None if
+    there is nowhere to send one.
+
+    The same webhook routing as state-change alerts: the global
+    `webhook_url` (or --webhook-url) plus each endpoint's own
+    `webhook` URL. With no URL anywhere there is no alerter — the
+    breach still shows on the dashboard and in GET /api/status,
+    it just cannot be POSTed anywhere.
+    """
+    url = webhook_url(cfg, args) if args is not None else cfg.get("webhook_url")
+    routes = endpoint_webhooks(cfg)
+    if not url and not routes:
+        return None
+    return SlaBreachAlerter(url, routes=routes, records=records)
+
+
 def flap_threshold(cfg, args):
     """Consecutive failures that confirm an outage, or the default.
 
@@ -1034,7 +1051,7 @@ def dry_run_check(endpoints, name=None, retry=None):
 
 def monitor_loop(cfg, history, path, args, stop, config_path=None,
                  reload_requested=None, max_rounds=None,
-                 live_endpoints=None, live_sources=None):
+                 live_endpoints=None, live_sources=None, sla_alerts=None):
     """Check rounds until `stop` is set; returns the config in effect
     when the loop ends.
 
@@ -1066,11 +1083,20 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
     over whichever endpoints are due, and `max_rounds` counts
     those passes. A reload resets every endpoint to due, so new
     endpoints (and new intervals) are picked up on the next pass.
+
+    After every round the month's SLA report is checked for
+    breaches: an endpoint below its `sla_target` fires one webhook
+    alert for the month (see `SlaBreachAlerter`), so a breach is
+    paged while the month is still running, not only when someone
+    prints the report. `sla_alerts`, when given, is a dict shared
+    with the dashboard server that records when each breach was
+    alerted, so the dashboard and GET /api/status show it.
     """
     state_cfg = cfg
     endpoints = list(cfg.get("endpoints", []))
     interval = cfg.get("interval_seconds", 30)
     alerter = make_alerter(cfg, args)
+    sla_alerter = make_sla_alerter(cfg, args, records=sla_alerts)
     # One detector for the life of a config: the consecutive failure
     # count must survive across rounds.
     detector = FlapDetector(flap_threshold(cfg, args))
@@ -1106,6 +1132,8 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
                     new_names = {ep["name"] for ep in endpoints}
                     interval = new_cfg.get("interval_seconds", 30)
                     alerter = make_alerter(new_cfg, args)
+                    sla_alerter = make_sla_alerter(
+                        new_cfg, args, records=sla_alerts)
                     detector = FlapDetector(flap_threshold(new_cfg, args))
                     state_cfg = new_cfg
                     # New endpoints and new intervals apply from the
@@ -1149,6 +1177,10 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
                 if (sent is not None and sent["email"]
                         and sent["email_ok"] is None):
                     log.info("alert digest email:\n%s", sent["email"])
+            if sla_alerter is not None:
+                # One webhook per breached endpoint per month; a
+                # month that is not breaching sends nothing.
+                sla_alerter.maybe_alert(history, endpoints)
             save_history(history, path)
             rounds += 1
             if max_rounds is not None and rounds >= max_rounds:
@@ -1184,13 +1216,17 @@ def run_forever(cfg, host, port, args=None, config_path=None):
     # The same for the merged status page sources: the dashboard and
     # GET /api/status list them, and a reload updates the list.
     live_sources = merged_status_page_sources(cfg, args)
+    # Breach alerts fired this month, shared with the dashboard
+    # server so it can show when each breach was alerted.
+    sla_alerts = {}
     thread = threading.Thread(
         target=monitor_loop,
         args=(cfg, history, path, args, stop),
         kwargs={"config_path": config_path,
                 "reload_requested": reload_requested,
                 "live_endpoints": live_endpoints,
-                "live_sources": live_sources},
+                "live_sources": live_sources,
+                "sla_alerts": sla_alerts},
         name="checker", daemon=True)
     thread.start()
     log.info("dashboard at http://%s:%d/ — checking %d endpoint(s) every %ds "
@@ -1199,7 +1235,7 @@ def run_forever(cfg, host, port, args=None, config_path=None):
              cfg.get("interval_seconds", 30))
     try:
         serve(history, live_endpoints, host=host, port=port,
-              status_page_sources=live_sources)
+              status_page_sources=live_sources, sla_alerts=sla_alerts)
     except KeyboardInterrupt:
         stop.set()
     finally:
@@ -1292,6 +1328,16 @@ def main(argv=None):
     parser.add_argument("--sla-out", default=None, metavar="PATH",
                         help="write the --sla-report output to PATH "
                              "instead of printing it")
+    parser.add_argument("--sla-alert", default=None, nargs="?",
+                        const="current", metavar="YYYY-MM",
+                        help="fire a webhook alert for every endpoint "
+                             "breaching its sla_target in the given "
+                             "month and exit (one alert per endpoint "
+                             "per month); with no month given, the "
+                             "current month is used. Needs a webhook "
+                             "URL in the config (or --webhook-url) or "
+                             "a per-endpoint webhook — with none "
+                             "configured, nothing is sent")
     args = parser.parse_args(argv)
     if args.status_page_source and not args.status_page:
         parser.error("--status-page-source needs --status-page")
@@ -1328,6 +1374,33 @@ def main(argv=None):
                 fh.write(output)
         else:
             print(output, end="")
+        return 0
+    if args.sla_alert:
+        if args.sla_alert == "current":
+            now = time.localtime()
+            year, month = now.tm_year, now.tm_mon
+        else:
+            try:
+                year, month = parse_month(args.sla_alert)
+            except ValueError as exc:
+                parser.error(str(exc))
+        path = history_path(cfg, args)
+        history = load_history(path, maxlen=cfg.get("history", 100))
+        sla_alerter = make_sla_alerter(cfg, args)
+        if sla_alerter is None:
+            print("No webhook configured; no SLA breach alert sent.")
+            return 0
+        sent = sla_alerter.maybe_alert(
+            history, cfg.get("endpoints", []), year, month)
+        if sent:
+            for payload in sent:
+                print(f"SLA breach alert sent for {payload['endpoint']}: "
+                      f"{payload['uptime_pct']:.1f}% vs target "
+                      f"{payload['target']:.1f}% "
+                      f"(short {payload['shortfall_pct']:.1f}pp) "
+                      f"in {payload['month']}")
+        else:
+            print("No SLA breaches to alert on.")
         return 0
     if args.check is not None:
         name = None if args.check == "__all__" else args.check

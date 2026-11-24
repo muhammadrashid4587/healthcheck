@@ -56,7 +56,7 @@ def latency_sparkline(history, name, width=100, height=24):
 
 
 def status_snapshot(history, endpoints, now=None,
-                    status_page_sources=None):
+                    status_page_sources=None, sla_alerts=None):
     """Machine-readable status for every endpoint: the same data the
     dashboard renders, as plain JSON-friendly values.
 
@@ -90,13 +90,27 @@ def status_snapshot(history, endpoints, now=None,
     failure recovered on the retry — or None when never checked)
     and "retries_total" (retries spent across the recorded history,
     so a flapping endpoint's blips stay visible), and "last_checked_at"
-    (epoch seconds, or None when never checked). When
+    (epoch seconds, or None when never checked). "sla_target" is the
+    endpoint's configured SLA target, or None; "sla_breach" is True
+    when the endpoint is below its target in the current calendar
+    month, False when it meets it or has no target, and
+    "sla_shortfall_pct" is how far short it fell (None when it did
+    not breach) — the same computation as `--sla-report`, so the
+    live status and the report can never disagree. When
+    `sla_alerts` is given (the shared breach-alert records from
+    the checker loop), "sla_breach_alerted_at" is the epoch second
+    the breach alert fired for this endpoint in the current month,
+    or None when it has not fired. When
     `status_page_sources` is given, the merged status page sources
     (the config file's `status_page_sources` plus any
     --status-page-source flags) are listed under that key, as
     {"label", "path"|"url"} dicts, so a consumer can see what the
     static status page would merge in.
     """
+    current = time.localtime()
+    month_str = f"{current.tm_year:04d}-{current.tm_mon:02d}"
+    report = {row["name"]: row for row in sla_report(
+        history, endpoints, current.tm_year, current.tm_mon)}
     out = []
     for ep in endpoints:
         name = ep["name"]
@@ -121,6 +135,12 @@ def status_snapshot(history, endpoints, now=None,
              "days": w.get("days")}
             for w in (ep.get("maintenance_windows") or [])
         ]
+        row = report.get(name, {})
+        breached = row.get("met") is False
+        alert = (sla_alerts or {}).get(name) or {}
+        alerted_at = None
+        if alert.get("month") == month_str:
+            alerted_at = alert.get("alerted_at")
         out.append({
             "name": name,
             "status": status,
@@ -141,6 +161,11 @@ def status_snapshot(history, endpoints, now=None,
                         else None),
             "retries_total": history.retries_total(name),
             "last_checked_at": last,
+            "sla_target": ep.get("sla_target"),
+            "sla_breach": breached,
+            "sla_shortfall_pct": (row.get("shortfall_pct")
+                                  if breached else None),
+            "sla_breach_alerted_at": alerted_at,
         })
     snapshot = {"generated_at": time.time(), "endpoints": out}
     if status_page_sources is not None:
@@ -271,15 +296,22 @@ def render_metrics(history, endpoints, now=None):
 
 
 def render_dashboard(history, endpoints, now=None,
-                     status_page_sources=None):
+                     status_page_sources=None, sla_alerts=None):
     """Render the dashboard HTML.
 
     When `status_page_sources` is given and non-empty, a "Status
     page sources" section lists the merged sources (label plus the
     history path or remote URL), so the dashboard shows what the
     static status page would merge in. With no sources the section
-    is omitted and the page is unchanged.
+    is omitted and the page is unchanged. The SLA breach column
+    shows "BREACH -X.Xpp" for an endpoint below its `sla_target`
+    in the current calendar month (with the time its breach alert
+    fired, when `sla_alerts` carries a record for it), and "-"
+    otherwise — no target, no data, or meeting the target.
     """
+    current = time.localtime()
+    report = {row["name"]: row for row in sla_report(
+        history, endpoints, current.tm_year, current.tm_mon)}
     rows = []
     for ep in endpoints:
         name = ep["name"]
@@ -338,6 +370,21 @@ def render_dashboard(history, endpoints, now=None,
         else:
             http_status = (f"expected {expected}, got "
                            f"{actual if actual is not None else '-'}")
+        # SLA breach this month: the shortfall, and when the breach
+        # alert fired — the same numbers as the SLA report, so the
+        # dashboard and the report can never disagree.
+        sla_row = report.get(name, {})
+        if sla_row.get("met") is False:
+            sla_text = (f"BREACH -{sla_row['shortfall_pct']:.1f}pp")
+            alert = (sla_alerts or {}).get(name) or {}
+            if alert.get("month") == (f"{current.tm_year:04d}-"
+                                      f"{current.tm_mon:02d}"):
+                alerted = alert.get("alerted_at")
+                if alerted is not None:
+                    sla_text += (" alerted " + time.strftime(
+                        "%H:%M", time.localtime(alerted)))
+        else:
+            sla_text = "-"
         rows.append(
             f"<tr><td>{html.escape(name)}</td>"
             f"<td class=\"{cls}\">{status}</td>"
@@ -351,9 +398,10 @@ def render_dashboard(history, endpoints, now=None,
             f"<td>{pct_text}</td>"
             f"<td>{latency_sparkline(history, name)}</td>"
             f"<td>{html.escape(history.last_error(name) or '-')}</td>"
+            f"<td>{html.escape(sla_text)}</td>"
             f"<td>{last}</td></tr>"
         )
-    body = "\n".join(rows) or "<tr><td colspan=\"16\">No endpoints configured.</td></tr>"
+    body = "\n".join(rows) or "<tr><td colspan=\"17\">No endpoints configured.</td></tr>"
     if status_page_sources:
         items = "".join(
             f"<li>{html.escape(src['label'])} — "
@@ -366,18 +414,20 @@ def render_dashboard(history, endpoints, now=None,
 <html><head><meta charset="utf-8"><title>healthcheck</title>
 <style>body{{font-family:sans-serif;max-width:720px;margin:2em auto}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccc;padding:6px 10px;text-align:left}}.up{{color:green;font-weight:bold}}.down{{color:red;font-weight:bold}}.skipped{{color:#b8860b;font-weight:bold}}.maintenance{{color:#6a5acd;font-weight:bold}}</style>
 </head><body><h1>healthcheck</h1>
-<table><tr><th>Endpoint</th><th>Status</th><th>HTTP status</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Latency</th><th>Latency budget</th><th>Check every</th><th>Retries</th><th>Latency p50 / p95 / p99</th><th>Latency history</th><th>Last error</th><th>Last check</th></tr>
+<table><tr><th>Endpoint</th><th>Status</th><th>HTTP status</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Latency</th><th>Latency budget</th><th>Check every</th><th>Retries</th><th>Latency p50 / p95 / p99</th><th>Latency history</th><th>Last error</th><th>SLA breach</th><th>Last check</th></tr>
 {body}</table>
 {sources_html}<p>Rendered {time.strftime('%Y-%m-%d %H:%M:%S')} — reload to update.</p></body></html>"""
 
 
-def make_handler(history, endpoints, status_page_sources=None):
+def make_handler(history, endpoints, status_page_sources=None,
+                 sla_alerts=None):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path == "/api/status":
                 payload = json.dumps(
                     status_snapshot(history, endpoints,
-                                    status_page_sources=status_page_sources)
+                                    status_page_sources=status_page_sources,
+                                    sla_alerts=sla_alerts)
                 ).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -434,7 +484,8 @@ def make_handler(history, endpoints, status_page_sources=None):
                 return
             page = render_dashboard(
                 history, endpoints,
-                status_page_sources=status_page_sources).encode("utf-8")
+                status_page_sources=status_page_sources,
+                sla_alerts=sla_alerts).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(page)))
@@ -448,16 +499,19 @@ def make_handler(history, endpoints, status_page_sources=None):
 
 
 def serve(history, endpoints, host="127.0.0.1", port=8080,
-          status_page_sources=None):
+          status_page_sources=None, sla_alerts=None):
     """Serve the dashboard forever (Ctrl-C to stop).
 
     `status_page_sources` is the merged list of status page sources
     (config file plus CLI flags) the dashboard and GET /api/status
     report; pass the shared live list from `run_forever` so a
-    SIGHUP reload updates what is shown.
+    SIGHUP reload updates what is shown. `sla_alerts` is the shared
+    dict of breach-alert records from the checker loop, so the
+    dashboard and GET /api/status show when each breach was alerted.
     """
     server = ThreadingHTTPServer(
         (host, port),
         make_handler(history, endpoints,
-                     status_page_sources=status_page_sources))
+                     status_page_sources=status_page_sources,
+                     sla_alerts=sla_alerts))
     server.serve_forever()
