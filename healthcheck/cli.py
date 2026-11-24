@@ -26,7 +26,7 @@ import time
 
 from .alerts import CertExpiryAlerter, SlaBreachAlerter, WebhookAlerter
 from .checker import (check_endpoint_with_retry, maintenance_result,
-                      skipped_result)
+                      normalize_http_method, skipped_result)
 from .digest import DigestAlerter, validate_digest_config
 from .flap import DEFAULT_THRESHOLD, FlapDetector, validate_threshold
 from .incidents import (incidents_report, render_incidents_report,
@@ -61,6 +61,7 @@ def load_config(path):
     validate_dependencies(endpoints)
     validate_body_assertions(endpoints)
     validate_expect_status(endpoints)
+    validate_http_methods(endpoints)
     validate_latency_budgets(endpoints)
     validate_cert_expiry_warnings(endpoints)
     validate_check_intervals(endpoints)
@@ -408,6 +409,43 @@ def validate_expect_status(endpoints):
             raise ValueError(
                 f"endpoint {ep['name']!r}: expect_status must be an "
                 f"HTTP status code (100-599), not {value!r}")
+
+
+def validate_http_methods(endpoints):
+    """Reject bad `method` entries at config load.
+
+    An http endpoint may ask to be checked with a method other
+    than GET (e.g. HEAD for a headers-only check, POST for a
+    health endpoint that only answers to POST). Only http
+    endpoints can set it, and the value must be one of
+    ALLOWED_HTTP_METHODS (case-insensitive — it is normalized to
+    upper case, so the dashboard and the API always show the same
+    spelling). A HEAD check carries no response body, so body
+    assertions (`expect_body` / `expect_body_regex`) cannot apply
+    to it and are rejected together. Raises ValueError with a
+    clear message; the monitor refuses to start rather than run
+    with a check it can never pass.
+    """
+    for ep in endpoints:
+        value = ep.get("method")
+        if value is None:
+            continue
+        if ep["type"] != "http":
+            raise ValueError(
+                f"endpoint {ep['name']!r}: method only applies to "
+                f"http endpoints")
+        try:
+            ep["method"] = normalize_http_method(value)
+        except ValueError as exc:
+            raise ValueError(
+                f"endpoint {ep['name']!r}: {exc}") from exc
+        if ep["method"] == "HEAD" and (
+                ep.get("expect_body") is not None
+                or ep.get("expect_body_regex") is not None):
+            raise ValueError(
+                f"endpoint {ep['name']!r}: a HEAD check has no "
+                f"response body, so expect_body / expect_body_regex "
+                f"cannot apply to it")
 
 
 def validate_latency_budgets(endpoints):

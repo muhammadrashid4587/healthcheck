@@ -13,17 +13,18 @@ certificate, and the alert shows on the dashboard and in
 GET /api/status too.
 """
 
-__version__ = "0.49.0"
+__version__ = "0.50.0"
 
 from .alerts import (CertExpiryAlerter, SlaBreachAlerter, WebhookAlerter,
                      alert_payload, cert_expiry_alert_payload,
                      post_alert, sla_breach_payload)
 
-from .checker import (DEFAULT_CERT_EXPIRY_WARN_DAYS, CheckResult,
-                      cert_expiring_soon, cert_expiry_days,
+from .checker import (ALLOWED_HTTP_METHODS, DEFAULT_CERT_EXPIRY_WARN_DAYS,
+                      CheckResult, cert_expiring_soon, cert_expiry_days,
                       check_endpoint, check_endpoint_with_retry,
                       check_http, check_tcp, fetch_cert_expiry,
-                      maintenance_result, parse_cert_not_after)
+                      maintenance_result, normalize_http_method,
+                      parse_cert_not_after)
 from .cli import (apply_check_interval_overrides, apply_max_latency_overrides,
                   dry_run_check, endpoint_interval, format_check_line,
                   install_reload_handler, load_status_page_source,
@@ -32,8 +33,8 @@ from .cli import (apply_check_interval_overrides, apply_max_latency_overrides,
                   parse_check_interval, parse_max_latency, reload_config,
                   retry_enabled, select_check_targets,
                   validate_cert_expiry_warnings, validate_check_intervals,
-                  validate_latency_budgets, validate_retry_settings,
-                  validate_status_page_sources)
+                  validate_http_methods, validate_latency_budgets,
+                  validate_retry_settings, validate_status_page_sources)
 from .digest import (DEFAULT_DIGEST_INTERVAL_SECONDS, DigestAlerter,
                      build_digest, render_digest_email,
                      resolve_smtp_config, send_digest_email,
@@ -57,6 +58,7 @@ from .store import History
 
 __all__ = [
     "__version__",
+    "ALLOWED_HTTP_METHODS",
     "ApiStatusHistory",
     "CertExpiryAlerter",
     "CheckResult",
@@ -93,6 +95,7 @@ __all__ = [
     "load_status_page_source",
     "maintenance_result",
     "make_cert_alerter",
+    "normalize_http_method",
     "make_sla_alerter",
     "merged_status_page_sources",
     "monitor_loop",
@@ -129,6 +132,7 @@ __all__ = [
     "validate_cert_expiry_warnings",
     "validate_check_intervals",
     "validate_digest_config",
+    "validate_http_methods",
     "validate_latency_budgets",
     "validate_retry_settings",
     "validate_sla_targets",

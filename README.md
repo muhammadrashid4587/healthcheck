@@ -18,7 +18,10 @@ endpoint, and serves a small status dashboard over `http.server`.
   endpoint that never returns 200): any other status is DOWN,
   with the expected and actual codes named. The dashboard and
   `GET /api/status` show the expected vs actual status per
-  endpoint.
+  endpoint. An endpoint can also choose its HTTP method
+  (`method`, e.g. `HEAD` for a headers-only check or `POST` for
+  a health endpoint that only answers to POST); GET is the
+  default, and the check sends no body.
 - Per-endpoint latency budgets (`max_latency_ms`): an endpoint
   can declare the slowest it may answer (e.g. 500 ms); a check
   that answers slower is DOWN, with the actual latency and the
@@ -451,6 +454,16 @@ normally without it.
   A bad regex, a non-string value, or either key on a `tcp`
   endpoint is rejected at config load. A 4xx/5xx status is already
   DOWN, so no assertion runs there.
+  `method` is the HTTP method the check sends (optional, e.g.
+  `HEAD` or `POST`; GET by default): the check sends no body, so
+  only `GET`, `HEAD`, `POST`, `PUT`, `DELETE`, `PATCH`, and
+  `OPTIONS` are accepted — a method outside that list, a
+  non-string value, or the key on a `tcp` endpoint is rejected at
+  config load, and the value is normalized to upper case. A HEAD
+  check carries no response body, so `expect_body` /
+  `expect_body_regex` cannot be combined with it and are rejected
+  together; every other method judges the status (and the body
+  assertions, when set) exactly like a GET.
   `expect_status` is an exact status code the response must have
   (e.g. `204` for a no-content health endpoint): when it is set
   it replaces the 2xx/3xx rule entirely, so a 200 from an endpoint
@@ -537,7 +550,9 @@ normally without it.
 (UP / DOWN / SKIPPED / MAINTENANCE / UNKNOWN), how long the current
 outage has lasted (the Down since column — a duration like "12m 34s"
 when DOWN, `-` otherwise, counted from the first failed check in the
-current run of failures, unconfirmed ones included), the HTTP status
+current run of failures, unconfirmed ones included), the HTTP method
+the endpoint is checked with (`HEAD`, `POST`, `-` when it uses the
+default GET — TCP endpoints show `-` too), the HTTP status
 (`expected 204, got 200` when the endpoint asserts on a code, the
 bare actual code when it does not, `-` when no status was ever
 returned — TCP endpoints, never-checked, skipped, maintenance),
@@ -595,7 +610,9 @@ object per endpoint — `name`, `status` (UP / DOWN / SKIPPED /
 MAINTENANCE / UNKNOWN, same rules as the dashboard), `depends_on`
 (name or `null`), `maintenance_windows` (list of `start` / `end` /
 `days`), `expect_status` (the exact status the endpoint must
-return, or `null` when it accepts any 2xx/3xx), `status_code` (the
+return, or `null` when it accepts any 2xx/3xx), `method` (the HTTP
+method the endpoint is checked with, or `null` when it uses the
+default GET — `null` for `tcp` endpoints too), `status_code` (the
 most recent actual HTTP status, or `null` when none was ever
 returned), `cert_expires_at` (the epoch second the endpoint's TLS
 certificate expires, or `null` when no certificate was ever seen),
@@ -1178,9 +1195,36 @@ make test   # python3 -m unittest discover -s tests -v
   disagree, and a check 10 days old shows up in the 30d gauge
   while the 24h/7d gauges omit it. A window with no counted
   checks has no series, like the 24h/7d gauges — done in 0.49.0.
+- [x] Per-endpoint HTTP method (`method`, e.g. `HEAD` for a
+  headers-only check or `POST` for a health endpoint that only
+  answers to POST): the check sends that method with no body
+  (GET by default), and the status, body assertions, flap, and
+  alert rules judge the answer exactly like a GET. Only `GET`,
+  `HEAD`, `POST`, `PUT`, `DELETE`, `PATCH`, and `OPTIONS` are
+  accepted, case-insensitively and normalized to upper case; a
+  bad method, a non-string value, or the key on a `tcp`
+  endpoint is rejected at config load, and a HEAD check cannot
+  be combined with `expect_body` / `expect_body_regex` since a
+  HEAD response has no body. The dashboard gains a Method column
+  and `GET /api/status` gains `method` per endpoint — done in
+  0.50.0.
 
 ## Changelog
 
+- **0.50.0** — Per-endpoint HTTP method: an `http` endpoint can
+  set `method` (e.g. `HEAD` or `POST`) and the check sends that
+  method with no body instead of always GETting — a HEAD check
+  asks for headers only, a POST check suits a health endpoint
+  that only answers to POST. The status, body assertions, flap
+  detection, and alerts judge the answer exactly like a GET. Only
+  `GET`, `HEAD`, `POST`, `PUT`, `DELETE`, `PATCH`, and `OPTIONS`
+  are accepted (case-insensitive, normalized to upper case); a
+  bad method, a non-string value, or the key on a `tcp` endpoint
+  is rejected at config load, and a HEAD check cannot be combined
+  with `expect_body` / `expect_body_regex` since a HEAD response
+  has no body. The dashboard gains a Method column and `GET
+  /api/status` gains `method` per endpoint (`null` when the
+  endpoint uses the default GET).
 - **0.49.0** — 30-day uptime ratio gauge in `GET /metrics`:
   `healthcheck_uptime_ratio_30d` joins the all-time, 24h, and 7d
   uptime-ratio gauges, reading the same `uptime_pct_window`

@@ -27,6 +27,34 @@ MAX_BODY_BYTES = 1024 * 1024
 # paging anyone the moment a cert is minted.
 DEFAULT_CERT_EXPIRY_WARN_DAYS = 30
 
+# HTTP methods an endpoint may ask to be checked with. The check
+# sends no body, so only methods that make sense without one are
+# allowed — a POST health endpoint that needs a payload is out of
+# scope for a monitor that only asks "are you up".
+ALLOWED_HTTP_METHODS = frozenset(
+    {"GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"})
+
+
+def normalize_http_method(method):
+    """Upper-case `method` when it is an allowed HTTP method.
+
+    Returns None when no method was given (the check uses GET, as
+    before). Raises ValueError for anything else — a non-string,
+    an empty string, or a method outside ALLOWED_HTTP_METHODS —
+    so config load rejects it before the monitor ever runs.
+    """
+    if method is None:
+        return None
+    if not isinstance(method, str) or not method.strip():
+        raise ValueError(
+            f"method must be an HTTP method, not {method!r}")
+    upper = method.strip().upper()
+    if upper not in ALLOWED_HTTP_METHODS:
+        raise ValueError(
+            f"method must be one of {sorted(ALLOWED_HTTP_METHODS)}, "
+            f"not {method!r}")
+    return upper
+
 
 @dataclass(frozen=True)
 class CheckResult:
@@ -234,8 +262,17 @@ def _check_body(name, body, latency, status, expect_body,
 
 def check_http(name, url, timeout=5.0, cafile=None, cert=None, key=None,
                expect_body=None, expect_body_regex=None,
-               expect_status=None):
-    """GET url; ok when the status is 2xx or 3xx.
+               expect_status=None, method=None):
+    """Check url; ok when the status is 2xx or 3xx.
+
+    `method` is the HTTP method to send (GET by default): a HEAD
+    check asks for headers only, and a POST check suits a health
+    endpoint that only answers to POST. The check sends no body,
+    so only the methods in ALLOWED_HTTP_METHODS are accepted — a
+    bad value raises ValueError. A HEAD check carries no body, so
+    body assertions never apply to it (config load rejects the
+    combination); with any other method the assertions run as
+    before.
 
     For https:// URLs, `cafile`/`cert`/`key` select a custom TLS
     context (see build_tls_context); without them the default context
@@ -274,13 +311,15 @@ def check_http(name, url, timeout=5.0, cafile=None, cert=None, key=None,
         raise ValueError(
             f"expect_status must be an HTTP status code (100-599), "
             f"not {expect_status!r}")
+    method = normalize_http_method(method)
     started = time.monotonic()
     try:
         context = None
         if url.lower().startswith("https://") and (
                 cafile is not None or cert is not None or key is not None):
             context = build_tls_context(cafile=cafile, cert=cert, key=key)
-        with urllib.request.urlopen(url, timeout=timeout,
+        request = urllib.request.Request(url, method=method)
+        with urllib.request.urlopen(request, timeout=timeout,
                                     context=context) as resp:
             status = resp.status
             body = (resp.read(MAX_BODY_BYTES + 1)
@@ -385,7 +424,8 @@ def check_endpoint(endpoint, timeout=5.0):
                           key=endpoint.get("key"),
                           expect_body=endpoint.get("expect_body"),
                           expect_body_regex=endpoint.get("expect_body_regex"),
-                          expect_status=endpoint.get("expect_status"))
+                          expect_status=endpoint.get("expect_status"),
+                          method=endpoint.get("method"))
     raise ValueError(f"unknown endpoint type: {kind!r}")
 
 
