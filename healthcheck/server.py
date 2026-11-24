@@ -119,6 +119,12 @@ def status_snapshot(history, endpoints, now=None,
     the epoch second the current outage started (the first failed
     check in the current run of failures, unconfirmed ones
     included), or None when the endpoint is not currently down.
+    "recent_incidents" is the endpoint's recent outages, newest
+    first (at most 5) — each {"start", "end", "checks", "ongoing",
+    "duration_s"}, grouped the same way as the static status
+    page's incident list, so the API and the page can never
+    disagree; an ongoing incident has "end" None and its duration
+    runs to `now`.
     When `sla_alerts` is given (the shared breach-alert records from
     the checker loop), "sla_breach_alerted_at" is the epoch second
     the breach alert fired for this endpoint in the current month,
@@ -189,6 +195,7 @@ def status_snapshot(history, endpoints, now=None,
                                   if breached else None),
             "sla_breach_alerted_at": alerted_at,
             "down_since": history.down_since(name),
+            "recent_incidents": history.recent_incidents(name, now=now),
         })
     snapshot = {"generated_at": time.time(), "endpoints": out}
     if status_page_sources is not None:

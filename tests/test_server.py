@@ -139,6 +139,48 @@ class StatusApiTests(unittest.TestCase):
         snap = status_snapshot(hist, self.endpoints[:1])
         self.assertEqual(snap["endpoints"][0]["status"], "UP")
 
+    def test_snapshot_reports_recent_incidents(self):
+        hist = History()
+        hist.record(_result("db", True, at=1_700_000_000.0))
+        hist.record(_result("db", False, at=1_700_000_060.0))
+        hist.record(_result("db", False, at=1_700_000_120.0))
+        hist.record(_result("db", True, at=1_700_000_180.0))
+        snap = status_snapshot(hist, self.endpoints)
+        by_name = self._by_name(snap)
+        self.assertEqual(by_name["db"]["recent_incidents"], [{
+            "start": 1_700_000_060.0, "end": 1_700_000_180.0,
+            "checks": 2, "ongoing": False, "duration_s": 120.0}])
+        # An endpoint that never failed has no incidents.
+        self.assertEqual(by_name["web"]["recent_incidents"], [])
+
+    def test_snapshot_ongoing_incident_duration_uses_now(self):
+        hist = History()
+        hist.record(_result("db", False, at=1_700_000_000.0))
+        snap = status_snapshot(hist, self.endpoints, now=1_700_000_300.0)
+        incident = self._by_name(snap)["db"]["recent_incidents"][0]
+        self.assertEqual(incident["start"], 1_700_000_000.0)
+        self.assertIsNone(incident["end"])
+        self.assertTrue(incident["ongoing"])
+        self.assertEqual(incident["duration_s"], 300.0)
+
+    def test_snapshot_incidents_ignore_skips_and_unconfirmed(self):
+        hist = History()
+        hist.record(CheckResult(
+            name="db", ok=False, latency_ms=1.0, checked_at=1_700_000_000.0,
+            unconfirmed=True))
+        hist.record(CheckResult(
+            name="db", ok=False, latency_ms=0.0, checked_at=1_700_000_060.0,
+            skipped=True, depends_on="web"))
+        hist.record(_result("db", True, at=1_700_000_120.0))
+        snap = status_snapshot(hist, self.endpoints)
+        self.assertEqual(self._by_name(snap)["db"]["recent_incidents"], [])
+
+    def test_snapshot_unknown_endpoint_has_no_incidents(self):
+        snap = status_snapshot(self.history, self.endpoints + [
+            {"name": "fresh", "type": "tcp", "host": "127.0.0.1", "port": 1}])
+        self.assertEqual(self._by_name(snap)["fresh"]["recent_incidents"],
+                         [])
+
     def test_snapshot_is_json_serializable(self):
         snap = status_snapshot(self.history, self.endpoints)
         parsed = json.loads(json.dumps(snap))

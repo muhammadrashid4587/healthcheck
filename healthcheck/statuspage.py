@@ -25,24 +25,6 @@ from .server import latency_sparkline
 DEFAULT_INCIDENT_LIMIT = 5
 
 
-def _is_down(entry):
-    """A confirmed outage check: failed, and the failure really ran
-    (not a skip, not an unconfirmed blip below the flap threshold,
-    not a paused maintenance round)."""
-    return (not entry["ok"]
-            and not entry.get("skipped", False)
-            and not entry.get("unconfirmed", False)
-            and not entry.get("maintenance", False))
-
-
-def _is_up(entry):
-    """A check that ran and passed."""
-    return (entry["ok"]
-            and not entry.get("skipped", False)
-            and not entry.get("unconfirmed", False)
-            and not entry.get("maintenance", False))
-
-
 def recent_incidents(history, name, limit=DEFAULT_INCIDENT_LIMIT):
     """Recent outage incidents for an endpoint, newest first.
 
@@ -54,28 +36,11 @@ def recent_incidents(history, name, limit=DEFAULT_INCIDENT_LIMIT):
     outages and neither start nor end an incident — a skip in the
     middle of a run of downs does not split it, and a recovery must
     be a real passing check.
+
+    The grouping lives on History so the dashboard API can report
+    the same incidents; this is a thin wrapper over it.
     """
-    entries = history.recent(name, history.maxlen)
-    incidents = []
-    current = None
-    for entry in entries:
-        if _is_down(entry):
-            if current is None:
-                current = {"start": entry["checked_at"], "end": None,
-                           "checks": 0, "ongoing": True}
-            current["checks"] += 1
-        elif _is_up(entry):
-            if current is not None:
-                current["end"] = entry["checked_at"]
-                current["ongoing"] = False
-                incidents.append(current)
-                current = None
-    if current is not None:
-        incidents.append(current)
-    for incident in incidents:
-        end = incident["end"] if incident["end"] is not None else time.time()
-        incident["duration_s"] = round(end - incident["start"], 1)
-    return incidents[::-1][:limit]
+    return history.recent_incidents(name, limit=limit)
 
 
 def endpoint_status(history, name):

@@ -56,6 +56,54 @@ class History:
         checks = self._checks.get(name)
         return checks[-1] if checks else None
 
+    def recent_incidents(self, name, limit=5, now=None):
+        """Recent outage incidents for an endpoint, newest first.
+
+        Consecutive confirmed-down checks form one incident: it
+        starts at the first down check and ends at the first
+        passing check after it (the recovery). An incident still
+        in progress at the end of the recorded history has `end`
+        None and `ongoing` True, and its duration runs to `now`
+        (the current time when not given). Skips, unconfirmed
+        failures and maintenance rounds are not outages and
+        neither start nor end an incident — a skip in the middle
+        of a run of downs does not split it, and a recovery must
+        be a real passing check. Each incident is {"start", "end",
+        "checks", "ongoing", "duration_s"}. The same grouping
+        the static status page and the SLA export use, so every
+        surface reports the same incidents.
+        """
+        entries = self.recent(name, self.maxlen)
+        incidents = []
+        current = None
+        for entry in entries:
+            down = (not entry["ok"]
+                    and not entry.get("skipped", False)
+                    and not entry.get("unconfirmed", False)
+                    and not entry.get("maintenance", False))
+            up = (entry["ok"]
+                  and not entry.get("skipped", False)
+                  and not entry.get("unconfirmed", False)
+                  and not entry.get("maintenance", False))
+            if down:
+                if current is None:
+                    current = {"start": entry["checked_at"], "end": None,
+                               "checks": 0, "ongoing": True}
+                current["checks"] += 1
+            elif up:
+                if current is not None:
+                    current["end"] = entry["checked_at"]
+                    current["ongoing"] = False
+                    incidents.append(current)
+                    current = None
+        if current is not None:
+            incidents.append(current)
+        ref = time.time() if now is None else now
+        for incident in incidents:
+            end = incident["end"] if incident["end"] is not None else ref
+            incident["duration_s"] = round(end - incident["start"], 1)
+        return incidents[::-1][:limit]
+
     def down_since(self, name):
         """Epoch second the current outage started, or None.
 

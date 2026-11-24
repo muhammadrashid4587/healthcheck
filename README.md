@@ -120,9 +120,9 @@ endpoint, and serves a small status dashboard over `http.server`.
   check totals by result — so a Prometheus server can scrape it.
 - A JSON API: `GET /api/status` on the dashboard server returns the
   same data as JSON (status, uptime all-time / 24h / 7d, latency,
-  last check, dependency, maintenance windows per endpoint), so
-  scripts and other tools can consume the live status without
-  scraping the HTML.
+  last check, recent incidents, dependency, maintenance windows per
+  endpoint), so scripts and other tools can consume the live status
+  without scraping the HTML.
 - SLA reporting: an endpoint can declare an `sla_target` (e.g.
   99.9); `python3 -m healthcheck.cli --config config.json
   --sla-report 2026-11` prints that calendar month's uptime per
@@ -549,7 +549,12 @@ it has not fired — the same computation as `--sla-report`, so the
 live status and the report can never disagree), `down_since` (the
 epoch second the current outage started — the first failed check
 in the current run of failures, unconfirmed ones included — or
-`null` when the endpoint is not currently down), and
+`null` when the endpoint is not currently down), `recent_incidents`
+(the endpoint's recent outages, newest first, at most 5 — each
+`{"start", "end", "checks", "ongoing", "duration_s"}`, grouped the
+same way as the static status page's incident list, so the API and
+the page can never disagree; an ongoing incident has `end` `null`
+and its duration runs to the snapshot time), and
 `last_checked_at` (epoch seconds, or `null` when never checked) —
 plus a `status_page_sources` list (`{"label", "path"|"url"}` per
 merged source), so a consumer can see what the static status page
@@ -841,8 +846,29 @@ make test   # python3 -m unittest discover -s tests -v
   `healthcheck_down_seconds` gauge (0 when up, omitted when
   never checked, skipped, or in maintenance), all computed from
   the same `History.down_since()` — done in 0.32.0.
+- [x] Recent incidents in the JSON API: `GET /api/status` gains
+  `recent_incidents` per endpoint (at most 5, newest first —
+  each `{"start", "end", "checks", "ongoing", "duration_s"}`),
+  so scripts consuming the API can see outage history without
+  scraping the dashboard or regenerating the static status page.
+  The grouping moved onto `History.recent_incidents()`, so the
+  API, the static status page, and the SLA export all report the
+  same incidents; the status page's `recent_incidents()` is now
+  a thin wrapper over it. An ongoing incident has `end` `null`
+  and its duration runs to the snapshot time — done in 0.33.0.
 
 ## Changelog
+
+- **0.33.0** — Recent incidents in the JSON API: `GET /api/status`
+  gains `recent_incidents` per endpoint (at most 5, newest first —
+  each `{"start", "end", "checks", "ongoing", "duration_s"}`), so
+  scripts consuming the API can see outage history without scraping
+  the dashboard or regenerating the static status page. The incident
+  grouping moved onto `History.recent_incidents()`, so the API, the
+  static status page, and the SLA export all report the same
+  incidents; the status page's `recent_incidents()` is now a thin
+  wrapper over it. An ongoing incident has `end` `null` and its
+  duration runs to the snapshot time.
 
 - **0.32.0** — Down since / outage duration: the dashboard gains
   a Down since column showing how long the current outage has
