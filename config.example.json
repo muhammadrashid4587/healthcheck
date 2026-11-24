@@ -2,6 +2,9 @@
   "endpoints": [
     {
       "expect_status": 200,
+      "headers": {
+        "X-Api-Key": "example-key"
+      },
       "maintenance_windows": [
         {
           "days": "sat",

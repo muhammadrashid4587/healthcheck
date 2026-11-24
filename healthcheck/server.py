@@ -127,7 +127,11 @@ def status_snapshot(history, endpoints, now=None,
     it stays after a later success, so it answers "why did it last
     fail"), "method" (the HTTP method the endpoint is checked
     with, or None when it uses the default GET — None for tcp
-    endpoints too), "check_interval_s" (the endpoint's own check
+    endpoints too), "headers" (the names of the extra request
+    headers the endpoint sends with its checks, sorted, or None
+    when it sends none — the values are never exposed, since a
+    header value is often a secret like an Authorization token),
+    "check_interval_s" (the endpoint's own check
     interval in seconds, or None when it uses the global
     `interval_seconds`),
     "retries" (retries spent on the most recent recorded check — 0
@@ -232,6 +236,8 @@ def status_snapshot(history, endpoints, now=None,
             "maintenance_windows": windows,
             "expect_status": ep.get("expect_status"),
             "method": ep.get("method"),
+            "headers": (sorted(ep["headers"])
+                        if ep.get("headers") else None),
             "status_code": cur.get("status_code") if cur is not None
                          else None,
             "cert_expires_at": expires_at,
@@ -739,6 +745,12 @@ def render_dashboard(history, endpoints, now=None,
         # when the endpoint asserts on a code, the bare actual code
         # when it does not, "-" when no status was ever returned
         # (TCP endpoints, never-checked, skipped, maintenance).
+        # Request headers: the names the check sends, never the
+        # values — a header value is often a secret, so only the
+        # names are shown (and in GET /api/status, only the names
+        # are listed there too).
+        headers = ep.get("headers")
+        headers_text = (", ".join(sorted(headers)) if headers else "-")
         expected = ep.get("expect_status")
         actual = cur.get("status_code") if cur is not None else None
         if expected is None and actual is None:
@@ -805,6 +817,7 @@ def render_dashboard(history, endpoints, now=None,
             f"<td class=\"{cls}\">{status}</td>"
             f"<td>{html.escape(down_text)}</td>"
             f"<td>{html.escape(ep.get('method') or '-')}</td>"
+            f"<td>{html.escape(headers_text)}</td>"
             f"<td>{html.escape(http_status)}</td>"
             f"<td>{html.escape(cert_text)}</td>"
             f"<td>{html.escape(depends_on)}</td>"
@@ -819,7 +832,7 @@ def render_dashboard(history, endpoints, now=None,
             f"<td>{html.escape(sla_text)}</td>"
             f"<td>{last}</td></tr>"
         )
-    body = "\n".join(rows) or "<tr><td colspan=\"21\">No endpoints configured.</td></tr>"
+    body = "\n".join(rows) or "<tr><td colspan=\"22\">No endpoints configured.</td></tr>"
     if status_page_sources:
         items = "".join(
             f"<li>{html.escape(src['label'])} — "
@@ -833,7 +846,7 @@ def render_dashboard(history, endpoints, now=None,
 <html><head><meta charset="utf-8"><title>healthcheck</title>
 <style>body{{font-family:sans-serif;max-width:720px;margin:2em auto}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccc;padding:6px 10px;text-align:left}}.up{{color:green;font-weight:bold}}.down{{color:red;font-weight:bold}}.skipped{{color:#b8860b;font-weight:bold}}.maintenance{{color:#6a5acd;font-weight:bold}}</style>
 </head><body><h1>healthcheck</h1>
-<table><tr><th>Endpoint</th><th>Status</th><th>Down since</th><th>Method</th><th>HTTP status</th><th>Cert expires</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Uptime 30d</th><th>Latency</th><th>Latency budget</th><th>Check every</th><th>Retries</th><th>Latency p50 / p95 / p99</th><th>Latency history</th><th>Last error</th><th>SLA breach</th><th>Last check</th></tr>
+<table><tr><th>Endpoint</th><th>Status</th><th>Down since</th><th>Method</th><th>Headers</th><th>HTTP status</th><th>Cert expires</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Uptime 30d</th><th>Latency</th><th>Latency budget</th><th>Check every</th><th>Retries</th><th>Latency p50 / p95 / p99</th><th>Latency history</th><th>Last error</th><th>SLA breach</th><th>Last check</th></tr>
 {body}</table>
 {incidents_html}{sources_html}<p>Rendered {time.strftime('%Y-%m-%d %H:%M:%S')} — reload to update.</p></body></html>"""
 

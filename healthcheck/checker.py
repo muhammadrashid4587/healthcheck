@@ -35,6 +35,32 @@ ALLOWED_HTTP_METHODS = frozenset(
     {"GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"})
 
 
+def normalize_headers(headers):
+    """Validate a per-endpoint request-headers map, returning it.
+
+    Returns None when no headers were given (the check sends no
+    extra headers, as before). Raises ValueError for anything
+    else — a non-dict, a non-string key, an empty key, or a
+    non-string value — so config load rejects it before the
+    monitor ever runs. Keys are kept as configured (header names
+    are case-insensitive on the wire); values are sent verbatim,
+    so an Authorization token goes out exactly as written.
+    """
+    if headers is None:
+        return None
+    if not isinstance(headers, dict):
+        raise ValueError(f"headers must be an object, not {headers!r}")
+    for key, value in headers.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError(
+                f"headers must have string names, not {key!r}")
+        if not isinstance(value, str):
+            raise ValueError(
+                f"header {key!r} must have a string value, "
+                f"not {value!r}")
+    return headers
+
+
 def normalize_http_method(method):
     """Upper-case `method` when it is an allowed HTTP method.
 
@@ -262,8 +288,15 @@ def _check_body(name, body, latency, status, expect_body,
 
 def check_http(name, url, timeout=5.0, cafile=None, cert=None, key=None,
                expect_body=None, expect_body_regex=None,
-               expect_status=None, method=None):
+               expect_status=None, method=None, headers=None):
     """Check url; ok when the status is 2xx or 3xx.
+
+    `headers` is a map of extra request headers to send with the
+    check (e.g. `{"Authorization": "Bearer ..."}` for a health
+    endpoint behind auth, or `{"X-Api-Key": "..."}`) — validated
+    by `normalize_headers`, so a non-dict or a non-string key or
+    value raises ValueError. With no headers the request is sent
+    exactly as before, so existing endpoints behave unchanged.
 
     `method` is the HTTP method to send (GET by default): a HEAD
     check asks for headers only, and a POST check suits a health
@@ -312,13 +345,15 @@ def check_http(name, url, timeout=5.0, cafile=None, cert=None, key=None,
             f"expect_status must be an HTTP status code (100-599), "
             f"not {expect_status!r}")
     method = normalize_http_method(method)
+    headers = normalize_headers(headers)
     started = time.monotonic()
     try:
         context = None
         if url.lower().startswith("https://") and (
                 cafile is not None or cert is not None or key is not None):
             context = build_tls_context(cafile=cafile, cert=cert, key=key)
-        request = urllib.request.Request(url, method=method)
+        request = urllib.request.Request(url, method=method,
+                                         headers=headers or {})
         with urllib.request.urlopen(request, timeout=timeout,
                                     context=context) as resp:
             status = resp.status
@@ -425,7 +460,8 @@ def check_endpoint(endpoint, timeout=5.0):
                           expect_body=endpoint.get("expect_body"),
                           expect_body_regex=endpoint.get("expect_body_regex"),
                           expect_status=endpoint.get("expect_status"),
-                          method=endpoint.get("method"))
+                          method=endpoint.get("method"),
+                          headers=endpoint.get("headers"))
     raise ValueError(f"unknown endpoint type: {kind!r}")
 
 

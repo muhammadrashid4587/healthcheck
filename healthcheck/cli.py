@@ -26,7 +26,8 @@ import time
 
 from .alerts import CertExpiryAlerter, SlaBreachAlerter, WebhookAlerter
 from .checker import (check_endpoint_with_retry, maintenance_result,
-                      normalize_http_method, skipped_result)
+                      normalize_headers, normalize_http_method,
+                      skipped_result)
 from .digest import DigestAlerter, validate_digest_config
 from .flap import DEFAULT_THRESHOLD, FlapDetector, validate_threshold
 from .incidents import (incidents_report, render_incidents_report,
@@ -62,6 +63,7 @@ def load_config(path):
     validate_body_assertions(endpoints)
     validate_expect_status(endpoints)
     validate_http_methods(endpoints)
+    validate_request_headers(endpoints)
     validate_latency_budgets(endpoints)
     validate_cert_expiry_warnings(endpoints)
     validate_check_intervals(endpoints)
@@ -446,6 +448,33 @@ def validate_http_methods(endpoints):
                 f"endpoint {ep['name']!r}: a HEAD check has no "
                 f"response body, so expect_body / expect_body_regex "
                 f"cannot apply to it")
+
+
+def validate_request_headers(endpoints):
+    """Reject bad `headers` entries at config load.
+
+    An http endpoint may send extra request headers with the check
+    (e.g. an Authorization token for a health endpoint behind
+    auth). Only http endpoints can set them, and the value must be
+    an object of string names to string values — a header value is
+    often a secret, so it is sent verbatim and never shown on the
+    dashboard or in the API, only the names are. Raises ValueError
+    with a clear message; the monitor refuses to start rather
+    than run with a check it can never pass.
+    """
+    for ep in endpoints:
+        value = ep.get("headers")
+        if value is None:
+            continue
+        if ep["type"] != "http":
+            raise ValueError(
+                f"endpoint {ep['name']!r}: headers only apply to "
+                f"http endpoints")
+        try:
+            normalize_headers(value)
+        except ValueError as exc:
+            raise ValueError(
+                f"endpoint {ep['name']!r}: {exc}") from exc
 
 
 def validate_latency_budgets(endpoints):

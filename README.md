@@ -21,7 +21,13 @@ endpoint, and serves a small status dashboard over `http.server`.
   endpoint. An endpoint can also choose its HTTP method
   (`method`, e.g. `HEAD` for a headers-only check or `POST` for
   a health endpoint that only answers to POST); GET is the
-  default, and the check sends no body.
+  default, and the check sends no body. An endpoint can also send
+  extra request headers with its checks (`headers`, e.g.
+  `{"Authorization": "Bearer ..."}` for a health endpoint behind
+  auth, or `{"X-Api-Key": "..."}`); the values are sent verbatim
+  and are never shown anywhere — the dashboard and `GET
+  /api/status` list only the header names, since a value is
+  often a secret.
 - Per-endpoint latency budgets (`max_latency_ms`): an endpoint
   can declare the slowest it may answer (e.g. 500 ms); a check
   that answers slower is DOWN, with the actual latency and the
@@ -464,6 +470,16 @@ normally without it.
   `expect_body_regex` cannot be combined with it and are rejected
   together; every other method judges the status (and the body
   assertions, when set) exactly like a GET.
+  `headers` is a map of extra request headers to send with the
+  check (optional, e.g. `{"Authorization": "Bearer ..."}` for a
+  health endpoint behind auth, or `{"X-Api-Key": "..."}` for one
+  that wants an API key): the values are sent verbatim, exactly
+  as written. A non-object value, a non-string header name or
+  value, or the key on a `tcp` endpoint is rejected at config
+  load. The values are secrets and are never shown: the dashboard
+  and `GET /api/status` list only the header names, so an
+  operator can see that a check authenticates without the token
+  ever leaving the config file.
   `expect_status` is an exact status code the response must have
   (e.g. `204` for a no-content health endpoint): when it is set
   it replaces the 2xx/3xx rule entirely, so a 200 from an endpoint
@@ -552,7 +568,10 @@ outage has lasted (the Down since column — a duration like "12m 34s"
 when DOWN, `-` otherwise, counted from the first failed check in the
 current run of failures, unconfirmed ones included), the HTTP method
 the endpoint is checked with (`HEAD`, `POST`, `-` when it uses the
-default GET — TCP endpoints show `-` too), the HTTP status
+default GET — TCP endpoints show `-` too), the names of the extra
+request headers the check sends (`Authorization`, `X-Api-Key`, `-`
+when it sends none — the values are never shown, since a value is
+often a secret), the HTTP status
 (`expected 204, got 200` when the endpoint asserts on a code, the
 bare actual code when it does not, `-` when no status was ever
 returned — TCP endpoints, never-checked, skipped, maintenance),
@@ -612,7 +631,10 @@ MAINTENANCE / UNKNOWN, same rules as the dashboard), `depends_on`
 `days`), `expect_status` (the exact status the endpoint must
 return, or `null` when it accepts any 2xx/3xx), `method` (the HTTP
 method the endpoint is checked with, or `null` when it uses the
-default GET — `null` for `tcp` endpoints too), `status_code` (the
+default GET — `null` for `tcp` endpoints too), `headers` (the names of the extra
+request headers the endpoint sends with its checks, sorted, or `null` when it
+sends none — the values are never exposed, since a header value is often a
+secret like an Authorization token), `status_code` (the
 most recent actual HTTP status, or `null` when none was ever
 returned), `cert_expires_at` (the epoch second the endpoint's TLS
 certificate expires, or `null` when no certificate was ever seen),
@@ -1208,9 +1230,32 @@ make test   # python3 -m unittest discover -s tests -v
   HEAD response has no body. The dashboard gains a Method column
   and `GET /api/status` gains `method` per endpoint — done in
   0.50.0.
+- [x] Per-endpoint custom request headers (`headers`, e.g.
+  `{"Authorization": "Bearer ..."}` for a health endpoint behind
+  auth, or `{"X-Api-Key": "..."}`): the check sends those headers
+  with every request, verbatim, alongside the configured method;
+  endpoints without `headers` behave exactly as before. A
+  non-object value, a non-string header name or value, or the key
+  on a `tcp` endpoint is rejected at config load. The values are
+  secrets and are never shown: the dashboard gains a Headers
+  column and `GET /api/status` gains `headers` per endpoint, both
+  listing only the header names (sorted, `null` / `-` when the
+  endpoint sends none) — done in 0.51.0.
 
 ## Changelog
 
+- **0.51.0** — Per-endpoint custom request headers: an `http`
+  endpoint can set `headers` (e.g. `{"Authorization": "Bearer
+  ..."}` for a health endpoint behind auth, or `{"X-Api-Key":
+  "..."}`) and the check sends those headers with every request,
+  verbatim, alongside the configured HTTP method. A non-object
+  value, a non-string header name or value, or the key on a `tcp`
+  endpoint is rejected at config load, and endpoints without
+  `headers` behave exactly as before. The values are secrets and
+  are never shown: the dashboard gains a Headers column and `GET
+  /api/status` gains `headers` per endpoint, both listing only the
+  header names (sorted, `null` / `-` when the endpoint sends
+  none).
 - **0.50.0** — Per-endpoint HTTP method: an `http` endpoint can
   set `method` (e.g. `HEAD` or `POST`) and the check sends that
   method with no body instead of always GETting — a HEAD check
