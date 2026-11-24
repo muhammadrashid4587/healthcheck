@@ -56,6 +56,34 @@ class History:
         checks = self._checks.get(name)
         return checks[-1] if checks else None
 
+    def down_since(self, name):
+        """Epoch second the current outage started, or None.
+
+        The start of the current run of consecutive failed checks
+        that actually ran: walk back from the most recent entry
+        while it is a failure, and return the earliest failure's
+        timestamp. Unconfirmed failures below the flap threshold
+        count — the outage started when checks first failed, not
+        when the threshold confirmed it. A success ends the run,
+        so a recovered endpoint has no down-since; skipped and
+        maintenance rounds never ran, so one also ends the run
+        (an endpoint currently SKIPPED or in maintenance is not
+        DOWN, so it has no outage start). Returns None when the
+        endpoint was never checked. The bounded history can
+        truncate a very long outage, so this is the earliest
+        recorded failure, not necessarily the true start.
+        """
+        checks = self._checks.get(name)
+        if not checks:
+            return None
+        start = None
+        for entry in reversed(checks):
+            if (entry.get("ok", False) or entry.get("skipped", False)
+                    or entry.get("maintenance", False)):
+                break
+            start = entry["checked_at"]
+        return start
+
     def last_error(self, name):
         """Error string of the endpoint's most recent failed check.
 

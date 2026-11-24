@@ -10,7 +10,7 @@ fires one webhook alert for the month, and the breach shows on the
 dashboard and in GET /api/status.
 """
 
-__version__ = "0.31.0"
+__version__ = "0.32.0"
 
 from .alerts import (SlaBreachAlerter, WebhookAlerter, alert_payload,
                      post_alert, sla_breach_payload)
@@ -35,8 +35,8 @@ from .flap import DEFAULT_THRESHOLD, FlapDetector, FlapOutcome
 from .maintenance import (active_window, in_maintenance, summarize_windows,
                           validate_maintenance_windows)
 from .remote import ApiStatusHistory, fetch_remote_status
-from .server import (latency_sparkline, render_metrics, sla_snapshot,
-                     status_snapshot)
+from .server import (format_duration, latency_sparkline, render_metrics,
+                     sla_snapshot, status_snapshot)
 from .sla import (breaches, monthly_detail, monthly_uptime, parse_month,
                   render_sla_report, render_sla_report_csv,
                   render_sla_report_json, sla_report,
@@ -68,6 +68,7 @@ __all__ = [
     "endpoint_status",
     "fetch_remote_status",
     "format_check_line",
+    "format_duration",
     "in_maintenance",
     "install_reload_handler",
     "load_status_page_source",

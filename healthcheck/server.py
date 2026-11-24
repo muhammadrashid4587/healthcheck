@@ -55,6 +55,25 @@ def latency_sparkline(history, name, width=100, height=24):
     )
 
 
+def format_duration(seconds):
+    """Human duration for an outage: "45s", "12m 34s", "2h 5m", "3d 4h".
+
+    Seconds are rounded down; the two largest units are shown, so
+    a long outage stays short. A negative or zero duration is "0s".
+    """
+    total = max(0, int(seconds))
+    days, total = divmod(total, 86400)
+    hours, total = divmod(total, 3600)
+    minutes, secs = divmod(total, 60)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
 def status_snapshot(history, endpoints, now=None,
                     status_page_sources=None, sla_alerts=None):
     """Machine-readable status for every endpoint: the same data the
@@ -96,8 +115,11 @@ def status_snapshot(history, endpoints, now=None,
     month, False when it meets it or has no target, and
     "sla_shortfall_pct" is how far short it fell (None when it did
     not breach) — the same computation as `--sla-report`, so the
-    live status and the report can never disagree. When
-    `sla_alerts` is given (the shared breach-alert records from
+    live status and the report can never disagree. "down_since" is
+    the epoch second the current outage started (the first failed
+    check in the current run of failures, unconfirmed ones
+    included), or None when the endpoint is not currently down.
+    When `sla_alerts` is given (the shared breach-alert records from
     the checker loop), "sla_breach_alerted_at" is the epoch second
     the breach alert fired for this endpoint in the current month,
     or None when it has not fired. When
@@ -166,6 +188,7 @@ def status_snapshot(history, endpoints, now=None,
             "sla_shortfall_pct": (row.get("shortfall_pct")
                                   if breached else None),
             "sla_breach_alerted_at": alerted_at,
+            "down_since": history.down_since(name),
         })
     snapshot = {"generated_at": time.time(), "endpoints": out}
     if status_page_sources is not None:
@@ -216,6 +239,10 @@ def render_metrics(history, endpoints, now=None):
       reading, so it is omitted — no data is not a 0. A failure
       below the flap threshold still shows UP, same as the
       dashboard.
+    - ``healthcheck_down_seconds`` (gauge): seconds the endpoint
+      has been down, 0 when it is up. An endpoint that was never
+      checked, is currently SKIPPED, or is in maintenance has no
+      current reading, so it is omitted — no data is not a 0.
     - ``healthcheck_uptime_ratio`` (gauge): share of checks that
       were up, all-time, plus ``_24h`` and ``_7d`` variants over
       the last 24 hours / 7 days. Omitted when there is no counted
@@ -242,6 +269,20 @@ def render_metrics(history, endpoints, now=None):
             continue
         up = 1 if (cur["ok"] or cur.get("unconfirmed", False)) else 0
         lines.append(f'healthcheck_up{{name="{_prom_label(ep["name"])}"}} {up}')
+    lines.append("# HELP healthcheck_down_seconds Seconds the endpoint "
+                 "has been down (0 when up).")
+    lines.append("# TYPE healthcheck_down_seconds gauge")
+    ref = time.time() if now is None else now
+    for ep in endpoints:
+        cur = history.current(ep["name"])
+        if cur is None or cur.get("skipped", False) \
+                or cur.get("maintenance", False):
+            continue
+        since = history.down_since(ep["name"])
+        down = 0 if since is None else max(0, int(ref - since))
+        lines.append(
+            f'healthcheck_down_seconds{{name="{_prom_label(ep["name"])}"}} '
+            f"{down}")
     lines.append("# HELP healthcheck_uptime_ratio Share of checks that "
                  "were up (all-time).")
     lines.append("# TYPE healthcheck_uptime_ratio gauge")
@@ -303,7 +344,10 @@ def render_dashboard(history, endpoints, now=None,
     page sources" section lists the merged sources (label plus the
     history path or remote URL), so the dashboard shows what the
     static status page would merge in. With no sources the section
-    is omitted and the page is unchanged. The SLA breach column
+    is omitted and the page is unchanged. The Down since column
+    shows how long a DOWN endpoint's outage has lasted ("12m 34s",
+    "-" otherwise), counted from the first failed check in the
+    current run of failures. The SLA breach column
     shows "BREACH -X.Xpp" for an endpoint below its `sla_target`
     in the current calendar month (with the time its breach alert
     fired, when `sla_alerts` carries a record for it), and "-"
@@ -385,9 +429,18 @@ def render_dashboard(history, endpoints, now=None,
                         "%H:%M", time.localtime(alerted)))
         else:
             sla_text = "-"
+        # How long the current outage has lasted: the first failed
+        # check in the current run (unconfirmed failures included,
+        # so the clock starts when it first failed, not when the
+        # flap threshold confirmed it). "-" when not down.
+        ref = time.time() if now is None else now
+        since = history.down_since(name)
+        down_text = (format_duration(ref - since)
+                     if status == "DOWN" and since is not None else "-")
         rows.append(
             f"<tr><td>{html.escape(name)}</td>"
             f"<td class=\"{cls}\">{status}</td>"
+            f"<td>{html.escape(down_text)}</td>"
             f"<td>{html.escape(http_status)}</td>"
             f"<td>{html.escape(depends_on)}</td>"
             f"<td>{html.escape(windows)}</td>"
@@ -401,7 +454,7 @@ def render_dashboard(history, endpoints, now=None,
             f"<td>{html.escape(sla_text)}</td>"
             f"<td>{last}</td></tr>"
         )
-    body = "\n".join(rows) or "<tr><td colspan=\"17\">No endpoints configured.</td></tr>"
+    body = "\n".join(rows) or "<tr><td colspan=\"18\">No endpoints configured.</td></tr>"
     if status_page_sources:
         items = "".join(
             f"<li>{html.escape(src['label'])} — "
@@ -414,7 +467,7 @@ def render_dashboard(history, endpoints, now=None,
 <html><head><meta charset="utf-8"><title>healthcheck</title>
 <style>body{{font-family:sans-serif;max-width:720px;margin:2em auto}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccc;padding:6px 10px;text-align:left}}.up{{color:green;font-weight:bold}}.down{{color:red;font-weight:bold}}.skipped{{color:#b8860b;font-weight:bold}}.maintenance{{color:#6a5acd;font-weight:bold}}</style>
 </head><body><h1>healthcheck</h1>
-<table><tr><th>Endpoint</th><th>Status</th><th>HTTP status</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Latency</th><th>Latency budget</th><th>Check every</th><th>Retries</th><th>Latency p50 / p95 / p99</th><th>Latency history</th><th>Last error</th><th>SLA breach</th><th>Last check</th></tr>
+<table><tr><th>Endpoint</th><th>Status</th><th>Down since</th><th>HTTP status</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Latency</th><th>Latency budget</th><th>Check every</th><th>Retries</th><th>Latency p50 / p95 / p99</th><th>Latency history</th><th>Last error</th><th>SLA breach</th><th>Last check</th></tr>
 {body}</table>
 {sources_html}<p>Rendered {time.strftime('%Y-%m-%d %H:%M:%S')} — reload to update.</p></body></html>"""
 

@@ -79,6 +79,14 @@ endpoint, and serves a small status dashboard over `http.server`.
   untouched. The dashboard shows MAINTENANCE and lists the windows.
 - Uptime % over the last 24 hours and the last 7 days, so a recent
   outage shows up even when the all-time figure still looks fine.
+- Down since: when an endpoint is DOWN the dashboard shows how long
+  the outage has lasted ("12m 34s"), from the first failed check in
+  the current run of failures — unconfirmed failures below the flap
+  threshold count, so the clock starts when it first failed, not
+  when the outage was confirmed. The same start time is in
+  `GET /api/status` (`down_since`, epoch seconds, `null` when not
+  down) and in `GET /metrics` as a `healthcheck_down_seconds` gauge
+  (0 when up).
 - A static status page: `python3 -m healthcheck.cli --config config.json --status-page status.html`
   renders the same view as the dashboard — current status, uptime
   24h/7d, latency sparkline — plus a recent-incidents list per
@@ -474,7 +482,10 @@ normally without it.
 ## Dashboard
 
 `GET /` renders a table with one row per endpoint: name, current status
-(UP / DOWN / SKIPPED / MAINTENANCE / UNKNOWN), the HTTP status
+(UP / DOWN / SKIPPED / MAINTENANCE / UNKNOWN), how long the current
+outage has lasted (the Down since column — a duration like "12m 34s"
+when DOWN, `-` otherwise, counted from the first failed check in the
+current run of failures, unconfirmed ones included), the HTTP status
 (`expected 204, got 200` when the endpoint asserts on a code, the
 bare actual code when it does not, `-` when no status was ever
 returned — TCP endpoints, never-checked, skipped, maintenance),
@@ -535,7 +546,10 @@ it or has no target), `sla_shortfall_pct` (how far short it fell,
 or `null` when it did not breach), `sla_breach_alerted_at` (the
 epoch second its breach alert fired this month, or `null` when
 it has not fired — the same computation as `--sla-report`, so the
-live status and the report can never disagree), and
+live status and the report can never disagree), `down_since` (the
+epoch second the current outage started — the first failed check
+in the current run of failures, unconfirmed ones included — or
+`null` when the endpoint is not currently down), and
 `last_checked_at` (epoch seconds, or `null` when never checked) —
 plus a `status_page_sources` list (`{"label", "path"|"url"}` per
 merged source), so a consumer can see what the static status page
@@ -545,7 +559,11 @@ page sources" section below the endpoint table.
 `GET /metrics` returns the same data in Prometheus text format, for
 scraping: `healthcheck_up` (gauge, 1 when the endpoint is currently
 UP, 0 when DOWN — omitted for a never-checked, SKIPPED, or
-maintenance endpoint), `healthcheck_uptime_ratio` (gauge, share of
+maintenance endpoint), `healthcheck_down_seconds` (gauge, seconds
+the endpoint has been down — 0 when up, counted from the first
+failed check in the current run, unconfirmed ones included;
+omitted for a never-checked, SKIPPED, or maintenance endpoint),
+`healthcheck_uptime_ratio` (gauge, share of
 checks that were up, all-time) plus `healthcheck_uptime_ratio_24h`
 and `healthcheck_uptime_ratio_7d`, `healthcheck_latency_ms` (summary
 with `quantile="0.5" / "0.95" / "0.99"` in ms over the last 24 hours,
@@ -811,8 +829,34 @@ make test   # python3 -m unittest discover -s tests -v
   the report can never disagree. `--sla-alert [YYYY-MM]` fires
   the same alerts once from the command line and exits, for a
   cron job or a manual check — done in 0.31.0.
+- [x] Down since / outage duration: the dashboard gains a Down
+  since column showing how long the current outage has lasted
+  ("12m 34s", `-` when not down), counted from the first failed
+  check in the current run of failures — unconfirmed failures
+  below the flap threshold count, so the clock starts when it
+  first failed, not when the outage was confirmed; a success,
+  skip, or maintenance round ends the run. `GET /api/status`
+  gains `down_since` per endpoint (epoch seconds, or `null`
+  when not down) and `GET /metrics` gains a
+  `healthcheck_down_seconds` gauge (0 when up, omitted when
+  never checked, skipped, or in maintenance), all computed from
+  the same `History.down_since()` — done in 0.32.0.
 
 ## Changelog
+
+- **0.32.0** — Down since / outage duration: the dashboard gains
+  a Down since column showing how long the current outage has
+  lasted ("45s", "12m 34s", "2h 5m", "3d 4h" — the two largest
+  units), counted from the first failed check in the current run
+  of failures; unconfirmed failures below the flap threshold
+  count, so the clock starts when it first failed, not when the
+  outage was confirmed, and a success, skip, or maintenance
+  round ends the run. `GET /api/status` gains `down_since` per
+  endpoint (epoch seconds, `null` when not down) and `GET
+  /metrics` gains a `healthcheck_down_seconds` gauge (0 when up,
+  omitted for never-checked, skipped, or maintenance endpoints),
+  all from the same `History.down_since()` computation, so the
+  three surfaces can never disagree.
 
 - **0.31.0** — Webhook alerting on SLA breach: while the
   monitor runs, each check round re-evaluates the current
