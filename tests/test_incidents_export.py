@@ -91,6 +91,77 @@ class IncidentsReportTests(unittest.TestCase):
                 row["incidents"],
                 hist.recent_incidents(row["name"], limit=None, now=now))
 
+    def test_endpoint_filter_narrows_rows(self):
+        now = _at(2026, 11, 20, 13, 0)
+        report = incidents_report(_history(), [{"name": "api"},
+                                               {"name": "web"}],
+                                  now=now, name="api")
+        self.assertEqual([row["name"] for row in report["endpoints"]],
+                         ["api"])
+        self.assertEqual(report["endpoints"][0]["total_incidents"], 2)
+        self.assertEqual(report["totals"]["total_incidents"], 2)
+
+    def test_limit_caps_rows_newest_first(self):
+        now = _at(2026, 11, 20, 13, 0)
+        report = incidents_report(_history(), [{"name": "api"},
+                                               {"name": "web"}],
+                                  now=now, limit=1)
+        api, web = report["endpoints"]
+        # Only the newest incident survives: the ongoing one.
+        self.assertEqual(len(api["incidents"]), 1)
+        self.assertTrue(api["incidents"][0]["ongoing"])
+        self.assertEqual(api["total_incidents"], 1)
+        self.assertEqual(api["total_downtime_seconds"], 3600.0)
+        self.assertEqual(web["total_incidents"], 0)
+        self.assertEqual(report["totals"]["total_incidents"], 1)
+        self.assertEqual(report["totals"]["total_downtime_seconds"],
+                         3600.0)
+
+    def test_combined_endpoint_and_limit(self):
+        now = _at(2026, 11, 20, 13, 0)
+        report = incidents_report(_history(), [{"name": "api"},
+                                               {"name": "web"}],
+                                  now=now, name="api", limit=1)
+        self.assertEqual(len(report["endpoints"]), 1)
+        self.assertEqual(report["endpoints"][0]["name"], "api")
+        self.assertEqual(report["endpoints"][0]["total_incidents"], 1)
+        self.assertEqual(report["totals"]["total_incidents"], 1)
+        # An endpoint with no incidents still lists, empty.
+        report = incidents_report(_history(), [{"name": "api"},
+                                               {"name": "web"}],
+                                  now=now, name="web", limit=1)
+        self.assertEqual(len(report["endpoints"]), 1)
+        self.assertEqual(report["endpoints"][0]["incidents"], [])
+        self.assertEqual(report["totals"]["total_incidents"], 0)
+
+    def test_unknown_endpoint_raises(self):
+        with self.assertRaisesRegex(ValueError,
+                                    "unknown endpoint: nope"):
+            incidents_report(_history(), [{"name": "api"}],
+                             now=_at(2026, 11, 20, 13, 0), name="nope")
+
+    def test_totals_sum_the_rows_actually_exported(self):
+        # The totals must stay consistent with the unfiltered
+        # export (same rows, same totals) and with any filtered
+        # one (totals are the sum of the exported rows, not of
+        # the whole history).
+        now = _at(2026, 11, 20, 13, 0)
+        endpoints = [{"name": "api"}, {"name": "web"}]
+        for kwargs in ({}, {"name": "api"}, {"limit": 1},
+                       {"name": "api", "limit": 1}):
+            report = incidents_report(_history(), endpoints, now=now,
+                                      **kwargs)
+            self.assertEqual(
+                report["totals"]["total_incidents"],
+                sum(r["total_incidents"] for r in report["endpoints"]))
+            self.assertEqual(
+                report["totals"]["ongoing_incidents"],
+                sum(r["ongoing_incidents"] for r in report["endpoints"]))
+            self.assertEqual(
+                report["totals"]["total_downtime_seconds"],
+                round(sum(r["total_downtime_seconds"]
+                          for r in report["endpoints"]), 1))
+
     def test_no_incidents_is_zeroes_not_an_error(self):
         report = incidents_report(History(), [{"name": "api"}],
                                   now=_at(2026, 11, 20, 13, 0))
@@ -222,6 +293,84 @@ class CliTests(unittest.TestCase):
             self.assertEqual(len(rows), 2)
             self.assertEqual(rows[0]["endpoint"], "api")
             self.assertEqual(rows[0]["end"], "")
+
+    def test_incidents_endpoint_filter(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg_path = self._setup(d)
+            out = io.StringIO()
+            with redirect_stdout(out):
+                self.assertEqual(
+                    main(["--config", cfg_path, "--incidents",
+                          "--incidents-format", "json",
+                          "--endpoint", "api"]), 0)
+            payload = json.loads(out.getvalue())
+            self.assertEqual([row["name"] for row in
+                              payload["endpoints"]], ["api"])
+            self.assertEqual(payload["totals"]["total_incidents"], 2)
+
+    def test_incidents_limit_caps_rows(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg_path = self._setup(d)
+            out = io.StringIO()
+            with redirect_stdout(out):
+                self.assertEqual(
+                    main(["--config", cfg_path, "--incidents",
+                          "--incidents-format", "json",
+                          "--limit", "1"]), 0)
+            payload = json.loads(out.getvalue())
+            api, web = payload["endpoints"]
+            self.assertEqual(len(api["incidents"]), 1)
+            self.assertTrue(api["incidents"][0]["ongoing"])
+            self.assertEqual(payload["totals"]["total_incidents"], 1)
+
+    def test_incidents_endpoint_and_limit_combined(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg_path = self._setup(d)
+            out = io.StringIO()
+            with redirect_stdout(out):
+                self.assertEqual(
+                    main(["--config", cfg_path, "--incidents",
+                          "--incidents-format", "json",
+                          "--endpoint", "api", "--limit", "1"]), 0)
+            payload = json.loads(out.getvalue())
+            self.assertEqual(len(payload["endpoints"]), 1)
+            self.assertEqual(payload["endpoints"][0]["name"], "api")
+            self.assertEqual(
+                len(payload["endpoints"][0]["incidents"]), 1)
+            self.assertEqual(payload["totals"]["total_incidents"], 1)
+
+    def test_incidents_unknown_endpoint_exits_2(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg_path = self._setup(d)
+            with self.assertRaises(SystemExit) as ctx:
+                main(["--config", cfg_path, "--incidents",
+                      "--endpoint", "nope"])
+            self.assertEqual(ctx.exception.code, 2)
+
+    def test_incidents_non_positive_limit_exits_2(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg_path = self._setup(d)
+            for bad in ("0", "-3"):
+                with self.assertRaises(SystemExit) as ctx:
+                    main(["--config", cfg_path, "--incidents",
+                          "--limit", bad])
+                self.assertEqual(ctx.exception.code, 2)
+
+    def test_incidents_non_integer_limit_exits_2(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg_path = self._setup(d)
+            with self.assertRaises(SystemExit) as ctx:
+                main(["--config", cfg_path, "--incidents",
+                      "--limit", "abc"])
+            self.assertEqual(ctx.exception.code, 2)
+
+    def test_endpoint_and_limit_without_flag_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg_path = self._setup(d)
+            for extra in (["--endpoint", "api"], ["--limit", "1"]):
+                with self.assertRaises(SystemExit) as ctx:
+                    main(["--config", cfg_path] + extra)
+                self.assertEqual(ctx.exception.code, 2)
 
     def test_incidents_format_without_flag_rejected(self):
         with tempfile.TemporaryDirectory() as d:

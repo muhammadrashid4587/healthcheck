@@ -1344,6 +1344,15 @@ def main(argv=None):
     parser.add_argument("--incidents-out", default=None, metavar="PATH",
                         help="write the --incidents output to PATH "
                              "instead of printing it")
+    parser.add_argument("--endpoint", default=None, metavar="NAME",
+                        help="with --incidents: export only this "
+                             "endpoint's incidents (an unknown name "
+                             "is an error, like GET /api/incidents "
+                             "answers a bad ?endpoint= with a 400)")
+    parser.add_argument("--limit", type=int, default=None, metavar="N",
+                        help="with --incidents: export at most N "
+                             "incidents per endpoint, newest first "
+                             "(must be a positive integer)")
     parser.add_argument("--sla-alert", default=None, nargs="?",
                         const="current", metavar="YYYY-MM",
                         help="fire a webhook alert for every endpoint "
@@ -1359,10 +1368,11 @@ def main(argv=None):
         parser.error("--status-page-source needs --status-page")
     if (args.sla_format != "text" or args.sla_out) and not args.sla_report:
         parser.error("--sla-format and --sla-out need --sla-report")
-    if (args.incidents_format != "text" or args.incidents_out) \
+    if (args.incidents_format != "text" or args.incidents_out
+            or args.endpoint is not None or args.limit is not None) \
             and not args.incidents:
-        parser.error("--incidents-format and --incidents-out need "
-                     "--incidents")
+        parser.error("--incidents-format, --incidents-out, --endpoint "
+                     "and --limit need --incidents")
     cfg = load_config(args.config)
     try:
         apply_expect_status_overrides(cfg, args)
@@ -1396,9 +1406,20 @@ def main(argv=None):
             print(output, end="")
         return 0
     if args.incidents:
+        if args.limit is not None and args.limit < 1:
+            parser.error("--limit must be a positive integer, not "
+                         f"{args.limit}")
         path = history_path(cfg, args)
         history = load_history(path, maxlen=cfg.get("history", 100))
-        report = incidents_report(history, cfg.get("endpoints", []))
+        try:
+            report = incidents_report(
+                history, cfg.get("endpoints", []),
+                name=args.endpoint, limit=args.limit)
+        except ValueError as exc:
+            # An unknown --endpoint: an error, not an empty
+            # report — same rule as GET /api/incidents, which
+            # answers a bad ?endpoint= with a 400.
+            parser.error(str(exc))
         if args.incidents_format == "csv":
             output = render_incidents_report_csv(report)
         elif args.incidents_format == "json":

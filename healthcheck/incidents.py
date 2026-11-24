@@ -19,7 +19,7 @@ import json
 import time
 
 
-def incidents_report(history, endpoints, now=None):
+def incidents_report(history, endpoints, now=None, name=None, limit=None):
     """One row per endpoint plus totals.
 
     Each row is {"name", "incidents", "total_incidents",
@@ -35,12 +35,27 @@ def incidents_report(history, endpoints, now=None):
     order. The recorded history is bounded, so this is every
     incident still recorded, not necessarily every incident since
     the monitor first ran.
+
+    `name`, when given, exports only that endpoint — an unknown
+    name raises ValueError, like `GET /api/incidents` answers a
+    bad `?endpoint=` with a 400 instead of an empty report, so a
+    typo does not silently export nothing. `limit`, when given,
+    caps the incidents per endpoint (newest first); with no limit
+    every recorded incident is exported. The totals always sum
+    the rows actually exported, so a filtered export's totals
+    are consistent with its own rows, and an unfiltered export's
+    totals are the same as before the filters existed.
     """
+    known = {ep["name"] for ep in endpoints}
+    if name is not None and name not in known:
+        raise ValueError(f"unknown endpoint: {name}")
+    selected = ([ep for ep in endpoints if ep["name"] == name]
+                if name is not None else endpoints)
     ref = time.time() if now is None else now
     rows = []
-    for ep in endpoints:
+    for ep in selected:
         incidents = history.recent_incidents(
-            ep["name"], limit=None, now=ref)
+            ep["name"], limit=limit, now=ref)
         rows.append({
             "name": ep["name"],
             "incidents": incidents,

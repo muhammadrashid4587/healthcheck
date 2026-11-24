@@ -681,6 +681,14 @@ Incident report (generated 2026-11-24 09:01:11)
 
 `--incidents-format csv` / `json` exports the same incidents
 instead (with `--incidents-out PATH` to write it to a file).
+`--endpoint NAME` exports only that endpoint's incidents and
+`--limit N` caps the incidents per endpoint, newest first —
+the same filters `GET /api/incidents` takes as `?endpoint=` and
+`?limit=`, and an unknown endpoint or a non-positive limit is
+an error (exit 2), not an empty report, so a typo does not
+silently export nothing. The totals always sum the rows
+actually exported, so a filtered export's totals are
+consistent with its own rows.
 The CSV has one row per incident (`endpoint, start, end,
 ongoing, duration_s, checks`, with `end` empty for an ongoing
 incident); the JSON is `{"generated_at", "endpoints": [...],
@@ -945,8 +953,30 @@ make test   # python3 -m unittest discover -s tests -v
   the dashboard, `GET /api/status`, `GET /api/incidents`, and
   the static status page use, so the export can never disagree
   with them — done in 0.37.0.
+- [x] `--incidents` filters: `--endpoint NAME` exports only
+  that endpoint's incidents and `--limit N` caps the incidents
+  per endpoint, newest first — the same filters `GET
+  /api/incidents` takes as `?endpoint=` and `?limit=`, reusing
+  the same `History.recent_incidents()` helpers, so the CLI, the
+  API, the dashboard, and the static page cannot disagree. An
+  unknown endpoint or a non-positive limit is an error (exit 2),
+  not an empty report; the totals always sum the rows actually
+  exported — done in 0.38.0.
 
 ## Changelog
+
+- **0.38.0** — `--incidents` filters: `--endpoint NAME` exports
+  only that endpoint's incidents and `--limit N` caps the
+  incidents per endpoint, newest first — mirroring the `GET
+  /api/incidents` query params and reusing the same
+  `History.recent_incidents()` helpers the export already uses,
+  so the CLI, the API, the dashboard, and the static page cannot
+  disagree. An unknown endpoint is an error (exit 2), like the
+  API's 400 for a bad `?endpoint=`; a non-positive or
+  non-integer limit is also exit 2. `--endpoint` and `--limit`
+  without `--incidents` are rejected, like the other
+  `--incidents-*` flags. The totals always sum the rows actually
+  exported.
 
 - **0.37.0** — `--incidents` CLI export: `--incidents` exports
   the recorded incident history — every recorded outage per
