@@ -513,7 +513,15 @@ time. Skipped checks are recorded in history with the dependency that
 caused the skip, but they never count in uptime and never appear in
 the sparkline or the percentiles; maintenance rounds are excluded the same way. A failure below the flap threshold likewise never
 counts in uptime, and the endpoint still shows UP — it only flips to
-DOWN once the threshold of consecutive failures is reached. Any other
+DOWN once the threshold of consecutive failures is reached. Below the
+table, a "Recent incidents" section lists each endpoint's recent
+outages, newest first, at most 5 per endpoint — the same incidents
+`GET /api/status` reports, from the same shared helper, so the
+dashboard, the API, and the static status page can never disagree.
+An ongoing incident shows "ongoing" instead of an end time, with its
+duration running to now; an endpoint with no incidents gets no
+subsection, and with no incidents recorded anywhere the section is
+omitted entirely. Any other
 path returns 404.
 
 `GET /api/status` returns the same data as JSON, for scripts and
@@ -856,8 +864,31 @@ make test   # python3 -m unittest discover -s tests -v
   same incidents; the status page's `recent_incidents()` is now
   a thin wrapper over it. An ongoing incident has `end` `null`
   and its duration runs to the snapshot time — done in 0.33.0.
+- [x] Recent incidents on the live dashboard: `GET /` gains a
+  "Recent incidents" section below the endpoint table — one
+  subsection per endpoint with recorded outages, newest first,
+  at most 5, each with its start and end (or "ongoing", with the
+  duration running to now), the duration, and how many failed
+  checks it holds — from the same `History.recent_incidents()`
+  the JSON API and the static status page use, so the three
+  surfaces can never disagree. Endpoints with no incidents get
+  no subsection, and with no incidents anywhere the section is
+  omitted, so a quiet monitor's dashboard is unchanged — done
+  in 0.34.0.
 
 ## Changelog
+
+- **0.34.0** — Recent incidents on the live dashboard: `GET /`
+  gains a "Recent incidents" section below the endpoint table —
+  one subsection per endpoint with recorded outages, newest
+  first, at most 5, each with its start and end (or "ongoing",
+  with the duration running to now), the duration, and how many
+  failed checks it holds — from the same
+  `History.recent_incidents()` the JSON API and the static status
+  page use, so the three surfaces can never disagree. Endpoints
+  with no incidents get no subsection, and with no incidents
+  anywhere the section is omitted, so a quiet monitor's
+  dashboard is unchanged.
 
 - **0.33.0** — Recent incidents in the JSON API: `GET /api/status`
   gains `recent_incidents` per endpoint (at most 5, newest first —

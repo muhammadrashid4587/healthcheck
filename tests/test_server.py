@@ -2,13 +2,15 @@
 
 import json
 import threading
+import time
 import unittest
 import urllib.request
 from http.server import ThreadingHTTPServer
 
 from healthcheck.checker import CheckResult
 from healthcheck.server import (latency_sparkline, make_handler,
-                                render_dashboard, status_snapshot)
+                                render_dashboard,
+                                render_recent_incidents, status_snapshot)
 from healthcheck.store import History
 
 
@@ -298,6 +300,88 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Latency history", page)
         self.assertIn("<svg", page)
         self.assertIn("<polyline", page)
+
+    def test_dashboard_shows_recent_incidents(self):
+        hist = History()
+        hist.record(_result("db", True, at=1_700_000_000.0))
+        hist.record(_result("db", False, at=1_700_000_060.0))
+        hist.record(_result("db", False, at=1_700_000_120.0))
+        hist.record(_result("db", True, at=1_700_000_180.0))
+        hist.record(_result("web", True))
+        page = render_dashboard(hist, self.endpoints)
+        self.assertIn("<h2>Recent incidents</h2>", page)
+        self.assertIn("<h3>db</h3>", page)
+        # Only the endpoint with an outage gets a subsection.
+        self.assertNotIn("<h3>web</h3>", page)
+        start = time.strftime("%Y-%m-%d %H:%M:%S",
+                              time.localtime(1_700_000_060.0))
+        end = time.strftime("%Y-%m-%d %H:%M:%S",
+                            time.localtime(1_700_000_180.0))
+        self.assertIn(start, page)  # incident start
+        self.assertIn(end, page)    # recovery
+        self.assertIn("(2m 0s, 2 failed checks)", page)
+
+    def test_dashboard_ongoing_incident_shows_no_end(self):
+        hist = History()
+        hist.record(_result("db", False, at=1_700_000_000.0))
+        hist.record(_result("web", True))
+        page = render_dashboard(hist, self.endpoints, now=1_700_000_300.0)
+        self.assertIn("<h2>Recent incidents</h2>", page)
+        start = time.strftime("%Y-%m-%d %H:%M:%S",
+                              time.localtime(1_700_000_000.0))
+        self.assertIn(f"{start} – ongoing", page)
+        self.assertIn("(5m 0s, 1 failed check)", page)
+
+    def test_dashboard_no_incidents_section_when_quiet(self):
+        # A monitor with no outages renders no incidents section at
+        # all — the dashboard is unchanged for a quiet monitor.
+        hist = History()
+        hist.record(_result("web", True))
+        hist.record(_result("db", True))
+        page = render_dashboard(hist, self.endpoints)
+        self.assertNotIn("Recent incidents", page)
+        self.assertEqual(render_recent_incidents(hist, self.endpoints), "")
+
+    def test_dashboard_incidents_newest_first_and_capped_at_five(self):
+        hist = History()
+        base = 1_700_000_000.0
+        for i in range(6):
+            hist.record(_result("db", False, at=base + i * 1000))
+            hist.record(_result("db", False, at=base + i * 1000 + 60))
+            hist.record(_result("db", True, at=base + i * 1000 + 120))
+        hist.record(_result("web", True))
+        page = render_dashboard(hist, self.endpoints)
+        # At most 5 incidents, newest first: the newest start is in
+        # the page, the oldest incident is not.
+        self.assertEqual(page.count("<li>"), 5)
+        newest = time.strftime("%Y-%m-%d %H:%M:%S",
+                               time.localtime(base + 5000))
+        oldest = time.strftime("%Y-%m-%d %H:%M:%S",
+                               time.localtime(base))
+        self.assertIn(newest, page)
+        self.assertNotIn(oldest, page)
+
+    def test_served_dashboard_shows_recent_incidents_over_http(self):
+        hist = History()
+        hist.record(_result("db", False, at=1_700_000_000.0))
+        hist.record(_result("db", False, at=1_700_000_060.0))
+        hist.record(_result("db", True, at=1_700_000_120.0))
+        hist.record(_result("web", True))
+        server = ThreadingHTTPServer(
+            ("127.0.0.1", 0), make_handler(hist, self.endpoints))
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/") as resp:
+                body = resp.read().decode("utf-8")
+                status = resp.status
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertEqual(status, 200)
+        self.assertIn("<h2>Recent incidents</h2>", body)
+        self.assertIn("<h3>db</h3>", body)
+        self.assertIn("2 failed checks", body)
 
     def test_unknown_path_404(self):
         server = ThreadingHTTPServer(

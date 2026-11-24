@@ -2,7 +2,10 @@
 
 GET / renders a plain HTML table: each endpoint, its current status,
 its expected vs actual HTTP status, uptime %, most recent latency,
-a sparkline of recent latencies, and last check time. GET /api/status returns the same data as JSON, for
+a sparkline of recent latencies, and last check time — plus a
+"Recent incidents" section listing each endpoint's recent outages,
+from the same History.recent_incidents() the API and the static
+status page use. GET /api/status returns the same data as JSON, for
 scripts and other tools that want to consume the live status without
 scraping the HTML. GET /api/sla returns the monthly SLA report as
 JSON — the same payload as `--sla-report --sla-format json`, for
@@ -343,6 +346,44 @@ def render_metrics(history, endpoints, now=None):
     return "\n".join(lines) + "\n"
 
 
+def render_recent_incidents(history, endpoints, now=None):
+    """Recent incidents section for the live dashboard, or "".
+
+    One subsection per endpoint with recorded outages, newest first
+    (at most 5 per endpoint), from the same History.recent_incidents()
+    the JSON API and the static status page use, so the three surfaces
+    can never disagree. An ongoing incident shows "ongoing" instead
+    of an end time, with its duration running to `now`. Endpoints
+    with no incidents are omitted; with none at all the section is
+    empty, so a quiet monitor's dashboard is unchanged.
+    """
+    sections = []
+    for ep in endpoints:
+        name = ep["name"]
+        incidents = history.recent_incidents(name, now=now)
+        if not incidents:
+            continue
+        items = []
+        for incident in incidents:
+            start = time.strftime("%Y-%m-%d %H:%M:%S",
+                                  time.localtime(incident["start"]))
+            if incident["ongoing"]:
+                end = "ongoing"
+            else:
+                end = time.strftime("%Y-%m-%d %H:%M:%S",
+                                    time.localtime(incident["end"]))
+            items.append(
+                f"<li>{start} – {end} "
+                f"({format_duration(incident['duration_s'])}, "
+                f"{incident['checks']} failed check"
+                f"{'s' if incident['checks'] != 1 else ''})</li>")
+        sections.append(
+            f"<h3>{html.escape(name)}</h3><ul>{''.join(items)}</ul>")
+    if not sections:
+        return ""
+    return "<h2>Recent incidents</h2>\n" + "\n".join(sections)
+
+
 def render_dashboard(history, endpoints, now=None,
                      status_page_sources=None, sla_alerts=None):
     """Render the dashboard HTML.
@@ -358,7 +399,13 @@ def render_dashboard(history, endpoints, now=None,
     shows "BREACH -X.Xpp" for an endpoint below its `sla_target`
     in the current calendar month (with the time its breach alert
     fired, when `sla_alerts` carries a record for it), and "-"
-    otherwise — no target, no data, or meeting the target.
+    otherwise — no target, no data, or meeting the target. Below
+    the table, a "Recent incidents" section lists each endpoint's
+    recent outages (newest first, at most 5, from the same
+    History.recent_incidents() the API and the static status page
+    use) — an ongoing incident shows "ongoing" instead of an end
+    time, with its duration running to now. With no incidents
+    recorded anywhere the section is omitted.
     """
     current = time.localtime()
     report = {row["name"]: row for row in sla_report(
@@ -470,13 +517,14 @@ def render_dashboard(history, endpoints, now=None,
         sources_html = (f"<h2>Status page sources</h2>\n<ul>{items}</ul>\n")
     else:
         sources_html = ""
+    incidents_html = render_recent_incidents(history, endpoints, now=now)
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>healthcheck</title>
 <style>body{{font-family:sans-serif;max-width:720px;margin:2em auto}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccc;padding:6px 10px;text-align:left}}.up{{color:green;font-weight:bold}}.down{{color:red;font-weight:bold}}.skipped{{color:#b8860b;font-weight:bold}}.maintenance{{color:#6a5acd;font-weight:bold}}</style>
 </head><body><h1>healthcheck</h1>
 <table><tr><th>Endpoint</th><th>Status</th><th>Down since</th><th>HTTP status</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Latency</th><th>Latency budget</th><th>Check every</th><th>Retries</th><th>Latency p50 / p95 / p99</th><th>Latency history</th><th>Last error</th><th>SLA breach</th><th>Last check</th></tr>
 {body}</table>
-{sources_html}<p>Rendered {time.strftime('%Y-%m-%d %H:%M:%S')} — reload to update.</p></body></html>"""
+{incidents_html}{sources_html}<p>Rendered {time.strftime('%Y-%m-%d %H:%M:%S')} — reload to update.</p></body></html>"""
 
 
 def make_handler(history, endpoints, status_page_sources=None,
