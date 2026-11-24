@@ -13,6 +13,8 @@ import time
 import urllib.error
 import urllib.request
 
+from .checker import (DEFAULT_CERT_EXPIRY_WARN_DAYS, cert_expiring_soon,
+                      cert_expiry_days)
 from .sla import breaches, sla_report
 
 log = logging.getLogger("healthcheck.alerts")
@@ -121,6 +123,134 @@ def sla_breach_payload(row, year, month):
         "shortfall_pct": row["shortfall_pct"],
         "latency": row["latency"],
     }
+
+
+def cert_expiry_alert_payload(endpoint, expires_at, days_remaining,
+                              warn_days, checked_at):
+    """JSON payload for a TLS certificate-expiry alert: an endpoint
+    whose certificate entered its warning window.
+
+    The endpoint stays UP — an expiring cert is a warning, not
+    downtime — so the payload carries the expiry itself (epoch
+    seconds), the whole days left, and the endpoint's warning
+    window in days, so the receiver can judge the urgency without
+    fetching the status again.
+    """
+    return {
+        "type": "cert_expiry",
+        "endpoint": endpoint,
+        "cert_expires_at": expires_at,
+        "days_remaining": days_remaining,
+        "warn_days": warn_days,
+        "checked_at": checked_at,
+    }
+
+
+class CertExpiryAlerter:
+    """Fires a webhook alert when an endpoint's TLS certificate
+    enters its warning window.
+
+    Built on the same expiry the checks already record: an https
+    endpoint whose certificate expires within its
+    `cert_expiry_warn_days` (30 by default) gets one webhook POST
+    with the expiry details (see `cert_expiry_alert_payload`). The
+    alert goes to the endpoint's own `webhook` URL when it has
+    one, else the global `webhook_url` — the same routing as
+    state-change and SLA breach alerts — and an endpoint with no
+    URL anywhere sends nothing. The endpoint stays UP: the alert
+    is a warning, not a state change, so it never touches the
+    flap detector or the state-change alerter.
+
+    One alert per entry into the window: the first check that
+    finds the certificate inside the window fires, and later
+    checks while the same certificate is still inside the window
+    do not re-fire — the dashboard and GET /api/status keep
+    showing the live days left, so a cert creeping toward expiry
+    stays visible there. A renewed certificate has a different
+    expiry, so when it later enters the window it fires again.
+    A failed delivery is logged by `post_alert` and never stops
+    the monitor, and the alert is still recorded as fired — like
+    the SLA breach alerter, a failed alert is not re-sent.
+
+    `records`, when given, is a dict the alerter writes into:
+    `records[name] = {"cert_expires_at", "warn_days",
+    "alerted_at"}` for each alert fired. The dashboard server
+    reads the same dict (passed through `run_forever`) to show
+    when each alert fired; without it the record lives only on
+    the alerter.
+    """
+
+    def __init__(self, url, timeout=5.0, routes=None, records=None):
+        self.url = url
+        self.timeout = timeout
+        self.routes = dict(routes) if routes else {}
+        self.records = records if records is not None else {}
+        # Certificates already alerted for, keyed by endpoint:
+        # seeded from the shared records, so a SIGHUP reload
+        # (which recreates this alerter) does not re-fire an
+        # alert sent for the same certificate.
+        self._alerted = {
+            name: rec["cert_expires_at"]
+            for name, rec in self.records.items()
+            if isinstance(rec, dict) and "cert_expires_at" in rec
+        }
+
+    def url_for(self, name):
+        """The webhook URL a cert-expiry alert for `name` goes to."""
+        return self.routes.get(name) or self.url
+
+    def alerted_for(self, name):
+        """The alert record for `name`, or None when it never fired."""
+        return self.records.get(name)
+
+    def maybe_alert(self, history, endpoints, now=None):
+        """Alert on every endpoint whose certificate entered its
+        warning window.
+
+        Returns the list of payloads sent (attempted — a failed
+        delivery still counts as sent, see the class docs), in
+        config order. `now` pins the window in tests; it defaults
+        to the current time. Endpoints with no recorded expiry
+        (plain http / tcp, never checked, or a check that could
+        not read the peer certificate) send nothing — an unknown
+        expiry is not a warning.
+        """
+        ref = time.time() if now is None else now
+        sent = []
+        for ep in endpoints:
+            name = ep["name"]
+            expires_at = history.cert_expiry(name)
+            if expires_at is None:
+                continue
+            warn_days = ep.get("cert_expiry_warn_days")
+            if warn_days is None:
+                warn_days = DEFAULT_CERT_EXPIRY_WARN_DAYS
+            if not cert_expiring_soon(expires_at, warn_days, now=ref):
+                continue
+            if self._alerted.get(name) == expires_at:
+                # Already alerted for this certificate: still
+                # inside the same window, not a new entry.
+                continue
+            url = self.url_for(name)
+            if url is None:
+                continue
+            current = history.current(name)
+            payload = cert_expiry_alert_payload(
+                name, expires_at,
+                cert_expiry_days(expires_at, now=ref), warn_days,
+                current["checked_at"] if current is not None else ref)
+            if post_alert(url, payload, timeout=self.timeout):
+                log.info("cert expiry alert sent for %s: %d day(s) "
+                         "left (warn window %s days)",
+                         name, payload["days_remaining"], warn_days)
+            self._alerted[name] = expires_at
+            self.records[name] = {
+                "cert_expires_at": expires_at,
+                "warn_days": warn_days,
+                "alerted_at": ref,
+            }
+            sent.append(payload)
+        return sent
 
 
 class SlaBreachAlerter:

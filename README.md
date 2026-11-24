@@ -128,7 +128,13 @@ endpoint, and serves a small status dashboard over `http.server`.
   warning window, "expired" once it has lapsed). An endpoint can
   set `cert_expiry_warn_days` (default 30) to choose its own
   window; a check that cannot read the peer certificate reports
-  no expiry instead of failing.
+  no expiry instead of failing. When a certificate enters its
+  warning window, one webhook alert goes out with the expiry
+  details (see `webhook_url` below — an endpoint's own `webhook`
+  wins) — once per certificate, so later checks while the same
+  cert is still inside the window do not re-fire, and a renewed
+  cert fires again when it enters the window; the alert and when
+  it fired show on the dashboard and in `GET /api/status`.
 - A JSON API: `GET /api/status` on the dashboard server returns the
   same data as JSON (status, uptime all-time / 24h / 7d, latency,
   last check, recent incidents, dependency, maintenance windows per
@@ -345,6 +351,19 @@ normally without it.
   delivery is logged as a warning and never stops the monitor. With
   flap detection, the alert fires only when the outage is confirmed
   (see `flap_threshold` above), not on a single failed check.
+  The same URL also receives certificate-expiry alerts: when an
+  endpoint's TLS certificate enters its warning window (its
+  `cert_expiry_warn_days`, 30 by default), one POST goes out with
+  `{"type": "cert_expiry", "endpoint", "cert_expires_at",
+  "days_remaining", "warn_days", "checked_at"}` — the expiry in
+  epoch seconds, the whole days left, and the endpoint's warning
+  window — to the endpoint's own `webhook` when it has one, else
+  the global `webhook_url`. One alert per certificate: later checks
+  while the same certificate is still inside the window do not
+  re-fire, and a renewed certificate fires again when it enters the
+  window; a failed delivery is logged and the alert is still
+  recorded as fired, so it is not re-sent. The alert and when it
+  fired show on the dashboard and in `GET /api/status`.
   The same URL also receives SLA breach alerts: when a month's SLA
   report shows an endpoint below its `sla_target`, one POST goes
   out per endpoint per month with
@@ -517,7 +536,9 @@ when the endpoint's TLS certificate expires (whole days left —
 "89d", "12d (soon)" inside the endpoint's `cert_expiry_warn_days`
 window, "expired" once it has lapsed, `-` when no certificate was
 ever seen — plain http / tcp, never-checked, or a check that could
-not read the peer certificate),
+not read the peer certificate — with the time the cert-expiry alert
+fired appended when one went out for the current certificate,
+e.g. "5d (soon) alerted 06:12"),
 the endpoint it depends on (or `-`), its maintenance windows (or `-`), uptime % over the
 recorded history, uptime %
 over the last 24 hours and the last 7 days (a `-` when no checks fall
@@ -568,6 +589,10 @@ expired, `null` when unknown), `cert_expiry_warn_days` (the
 endpoint's warning window in days, 30 by default), and
 `cert_expiry_warning` (whether the certificate expires inside that
 window — advisory only, it never changes the endpoint's status),
+`cert_expiry_alerted_at` (the epoch second the cert-expiry alert
+fired for the endpoint's current certificate, or `null` when it has
+not fired — a record for a different, renewed certificate does not
+count),
 `uptime_pct`, `uptime_24h_pct`, `uptime_7d_pct` (`null` when
 no checks fall in that window), `latency_ms` (most recent, or `null`),
 `max_latency_ms` (the latency budget in ms the endpoint must answer
@@ -1014,8 +1039,50 @@ make test   # python3 -m unittest discover -s tests -v
   endpoints rejected); a check that cannot read the peer
   certificate reports no expiry instead of failing — done in
   0.39.0.
+- [x] Webhook alerting on TLS certificate expiry: when an
+  endpoint's certificate enters its warning window (its
+  `cert_expiry_warn_days`, 30 by default), one webhook POST goes
+  out with the expiry details (`type: "cert_expiry"`, the
+  endpoint, `cert_expires_at`, `days_remaining`, `warn_days`,
+  `checked_at`) — to the endpoint's own `webhook` when it has
+  one, else the global `webhook_url`, reusing the state-change
+  and SLA breach alert routing. One alert per certificate: the
+  first check inside the window fires, later checks while the
+  same certificate is still inside the window do not re-fire,
+  and a renewed certificate fires again when it enters the
+  window; a failed delivery is logged and the alert is still
+  recorded as fired, so it is not re-sent. The alert never
+  changes the endpoint's status — the endpoint stays UP — and a
+  SIGHUP reload does not re-fire one already sent. The dashboard
+  gains the alert time in the Cert expires column ("5d (soon)
+  alerted 06:12") and `GET /api/status` gains
+  `cert_expiry_alerted_at` per endpoint — done in 0.40.0.
 
 ## Changelog
+
+- **0.40.0** — Webhook alerting on TLS certificate expiry: when
+  an endpoint's certificate enters its warning window (its
+  `cert_expiry_warn_days`, 30 by default), one webhook POST goes
+  out with the expiry details — `{"type": "cert_expiry",
+  "endpoint", "cert_expires_at", "days_remaining", "warn_days",
+  "checked_at"}` — to the endpoint's own `webhook` when it has
+  one, else the global `webhook_url`, reusing the state-change
+  and SLA breach alert routing (`CertExpiryAlerter`, evaluated
+  after every check round in the monitor loop). One alert per
+  certificate: the first check inside the window fires, later
+  checks while the same certificate is still inside the window
+  do not re-fire, and a renewed certificate (a different expiry)
+  fires again when it enters the window; a failed delivery is
+  logged and the alert is still recorded as fired, like the SLA
+  breach alerter. A SIGHUP reload does not re-fire an alert
+  already sent for the same certificate. The alert never changes
+  the endpoint's status — the endpoint stays UP — and the
+  dashboard shows when it fired in the Cert expires column
+  ("5d (soon) alerted 06:12") while `GET /api/status` gains
+  `cert_expiry_alerted_at` per endpoint. Tested end to end
+  against a local TLS server with an openssl-generated
+  2-day certificate: exactly one webhook POST across two
+  monitor rounds, endpoint still UP.
 
 - **0.39.0** — TLS certificate-expiry warnings: every HTTPS check
   reads the peer certificate's `notAfter` (one extra short TLS

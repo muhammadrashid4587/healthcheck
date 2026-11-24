@@ -85,7 +85,8 @@ def format_duration(seconds):
 
 
 def status_snapshot(history, endpoints, now=None,
-                    status_page_sources=None, sla_alerts=None):
+                    status_page_sources=None, sla_alerts=None,
+                    cert_alerts=None):
     """Machine-readable status for every endpoint: the same data the
     dashboard renders, as plain JSON-friendly values.
 
@@ -147,7 +148,12 @@ def status_snapshot(history, endpoints, now=None,
     When `sla_alerts` is given (the shared breach-alert records from
     the checker loop), "sla_breach_alerted_at" is the epoch second
     the breach alert fired for this endpoint in the current month,
-    or None when it has not fired. When
+    or None when it has not fired. When `cert_alerts` is given
+    (the shared cert-expiry-alert records from the checker loop),
+    "cert_expiry_alerted_at" is the epoch second the cert-expiry
+    alert fired for the endpoint's current certificate, or None
+    when it has not fired — a record for a different (renewed)
+    certificate does not count. When
     `status_page_sources` is given, the merged status page sources
     (the config file's `status_page_sources` plus any
     --status-page-source flags) are listed under that key, as
@@ -193,6 +199,11 @@ def status_snapshot(history, endpoints, now=None,
         if warn_days is None:
             warn_days = DEFAULT_CERT_EXPIRY_WARN_DAYS
         ref = now if now is not None else time.time()
+        cert_alert = (cert_alerts or {}).get(name) or {}
+        cert_alerted_at = (
+            cert_alert.get("alerted_at")
+            if cert_alert.get("cert_expires_at") == expires_at
+            else None)
         out.append({
             "name": name,
             "status": status,
@@ -206,6 +217,7 @@ def status_snapshot(history, endpoints, now=None,
             "cert_expiry_warn_days": warn_days,
             "cert_expiry_warning": cert_expiring_soon(
                 expires_at, warn_days, now=ref),
+            "cert_expiry_alerted_at": cert_alerted_at,
             "uptime_pct": history.uptime_pct(name),
             "uptime_24h_pct": history.uptime_pct_window(name, 24 * 3600),
             "uptime_7d_pct": history.uptime_pct_window(name, 7 * 24 * 3600),
@@ -475,7 +487,8 @@ def render_recent_incidents(history, endpoints, now=None):
 
 
 def render_dashboard(history, endpoints, now=None,
-                     status_page_sources=None, sla_alerts=None):
+                     status_page_sources=None, sla_alerts=None,
+                     cert_alerts=None):
     """Render the dashboard HTML.
 
     When `status_page_sources` is given and non-empty, a "Status
@@ -490,7 +503,9 @@ def render_dashboard(history, endpoints, now=None,
     "12d (soon)" inside its warning window, "expired" once it
     has lapsed, "-" when no certificate was ever seen — plain
     http / tcp, never checked, or a check that could not read the
-    peer certificate). The SLA breach column
+    peer certificate). When `cert_alerts` carries a record for the
+    endpoint's current certificate, the time its expiry alert
+    fired is appended ("5d (soon) alerted 06:12"). The SLA breach column
     shows "BREACH -X.Xpp" for an endpoint below its `sla_target`
     in the current calendar month (with the time its breach alert
     fired, when `sla_alerts` carries a record for it), and "-"
@@ -605,6 +620,16 @@ def render_dashboard(history, endpoints, now=None,
                 cert_text = f"{days}d (soon)"
             else:
                 cert_text = f"{days}d"
+            # When the expiry alert fired for this certificate,
+            # say when — like the SLA breach column says when its
+            # alert fired. A record for a different (renewed)
+            # certificate does not count.
+            cert_alert = (cert_alerts or {}).get(name) or {}
+            if cert_alert.get("cert_expires_at") == expires_at:
+                alerted = cert_alert.get("alerted_at")
+                if alerted is not None:
+                    cert_text += (" alerted " + time.strftime(
+                        "%H:%M", time.localtime(alerted)))
         rows.append(
             f"<tr><td>{html.escape(name)}</td>"
             f"<td class=\"{cls}\">{status}</td>"
@@ -643,14 +668,15 @@ def render_dashboard(history, endpoints, now=None,
 
 
 def make_handler(history, endpoints, status_page_sources=None,
-                 sla_alerts=None):
+                 sla_alerts=None, cert_alerts=None):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path == "/api/status":
                 payload = json.dumps(
                     status_snapshot(history, endpoints,
                                     status_page_sources=status_page_sources,
-                                    sla_alerts=sla_alerts)
+                                    sla_alerts=sla_alerts,
+                                    cert_alerts=cert_alerts)
                 ).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -755,7 +781,8 @@ def make_handler(history, endpoints, status_page_sources=None,
             page = render_dashboard(
                 history, endpoints,
                 status_page_sources=status_page_sources,
-                sla_alerts=sla_alerts).encode("utf-8")
+                sla_alerts=sla_alerts,
+                cert_alerts=cert_alerts).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(page)))
@@ -769,7 +796,7 @@ def make_handler(history, endpoints, status_page_sources=None,
 
 
 def serve(history, endpoints, host="127.0.0.1", port=8080,
-          status_page_sources=None, sla_alerts=None):
+          status_page_sources=None, sla_alerts=None, cert_alerts=None):
     """Serve the dashboard forever (Ctrl-C to stop).
 
     `status_page_sources` is the merged list of status page sources
@@ -778,10 +805,14 @@ def serve(history, endpoints, host="127.0.0.1", port=8080,
     SIGHUP reload updates what is shown. `sla_alerts` is the shared
     dict of breach-alert records from the checker loop, so the
     dashboard and GET /api/status show when each breach was alerted.
+    `cert_alerts` is the shared dict of cert-expiry-alert records
+    from the checker loop, so the dashboard and GET /api/status
+    show when each expiry alert fired.
     """
     server = ThreadingHTTPServer(
         (host, port),
         make_handler(history, endpoints,
                      status_page_sources=status_page_sources,
-                     sla_alerts=sla_alerts))
+                     sla_alerts=sla_alerts,
+                     cert_alerts=cert_alerts))
     server.serve_forever()

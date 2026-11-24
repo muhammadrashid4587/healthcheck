@@ -24,7 +24,7 @@ import signal
 import threading
 import time
 
-from .alerts import SlaBreachAlerter, WebhookAlerter
+from .alerts import CertExpiryAlerter, SlaBreachAlerter, WebhookAlerter
 from .checker import (check_endpoint_with_retry, maintenance_result,
                       skipped_result)
 from .digest import DigestAlerter, validate_digest_config
@@ -765,6 +765,23 @@ def make_alerter(cfg, args):
     return inner
 
 
+def make_cert_alerter(cfg, args, records=None):
+    """A CertExpiryAlerter for the configured webhook, or None if
+    there is nowhere to send one.
+
+    The same webhook routing as state-change and SLA breach
+    alerts: the global `webhook_url` (or --webhook-url) plus each
+    endpoint's own `webhook` URL. With no URL anywhere there is
+    no alerter — the warning still shows on the dashboard and in
+    GET /api/status, it just cannot be POSTed anywhere.
+    """
+    url = webhook_url(cfg, args) if args is not None else cfg.get("webhook_url")
+    routes = endpoint_webhooks(cfg)
+    if not url and not routes:
+        return None
+    return CertExpiryAlerter(url, routes=routes, records=records)
+
+
 def make_sla_alerter(cfg, args, records=None):
     """An SlaBreachAlerter for the configured webhook, or None if
     there is nowhere to send one.
@@ -1083,7 +1100,8 @@ def dry_run_check(endpoints, name=None, retry=None):
 
 def monitor_loop(cfg, history, path, args, stop, config_path=None,
                  reload_requested=None, max_rounds=None,
-                 live_endpoints=None, live_sources=None, sla_alerts=None):
+                 live_endpoints=None, live_sources=None, sla_alerts=None,
+                 cert_alerts=None):
     """Check rounds until `stop` is set; returns the config in effect
     when the loop ends.
 
@@ -1122,12 +1140,18 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
     paged while the month is still running, not only when someone
     prints the report. `sla_alerts`, when given, is a dict shared
     with the dashboard server that records when each breach was
-    alerted, so the dashboard and GET /api/status show it.
+    alerted, so the dashboard and GET /api/status show it. The
+    same round also checks TLS certificate expiry: an endpoint
+    whose certificate entered its warning window fires one webhook
+    alert for that certificate (see `CertExpiryAlerter`), and
+    `cert_alerts`, when given, is the shared dict the dashboard
+    server reads to show when each alert fired.
     """
     state_cfg = cfg
     endpoints = list(cfg.get("endpoints", []))
     interval = cfg.get("interval_seconds", 30)
     alerter = make_alerter(cfg, args)
+    cert_alerter = make_cert_alerter(cfg, args, records=cert_alerts)
     sla_alerter = make_sla_alerter(cfg, args, records=sla_alerts)
     # One detector for the life of a config: the consecutive failure
     # count must survive across rounds.
@@ -1164,6 +1188,8 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
                     new_names = {ep["name"] for ep in endpoints}
                     interval = new_cfg.get("interval_seconds", 30)
                     alerter = make_alerter(new_cfg, args)
+                    cert_alerter = make_cert_alerter(
+                        new_cfg, args, records=cert_alerts)
                     sla_alerter = make_sla_alerter(
                         new_cfg, args, records=sla_alerts)
                     detector = FlapDetector(flap_threshold(new_cfg, args))
@@ -1213,6 +1239,11 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
                 # One webhook per breached endpoint per month; a
                 # month that is not breaching sends nothing.
                 sla_alerter.maybe_alert(history, endpoints)
+            if cert_alerter is not None:
+                # One webhook per endpoint whose certificate
+                # entered its warning window; a certificate
+                # already alerted for does not re-fire.
+                cert_alerter.maybe_alert(history, endpoints)
             save_history(history, path)
             rounds += 1
             if max_rounds is not None and rounds >= max_rounds:
@@ -1251,6 +1282,9 @@ def run_forever(cfg, host, port, args=None, config_path=None):
     # Breach alerts fired this month, shared with the dashboard
     # server so it can show when each breach was alerted.
     sla_alerts = {}
+    # Cert-expiry alerts fired, shared with the dashboard server
+    # so it can show when each alert fired.
+    cert_alerts = {}
     thread = threading.Thread(
         target=monitor_loop,
         args=(cfg, history, path, args, stop),
@@ -1258,7 +1292,8 @@ def run_forever(cfg, host, port, args=None, config_path=None):
                 "reload_requested": reload_requested,
                 "live_endpoints": live_endpoints,
                 "live_sources": live_sources,
-                "sla_alerts": sla_alerts},
+                "sla_alerts": sla_alerts,
+                "cert_alerts": cert_alerts},
         name="checker", daemon=True)
     thread.start()
     log.info("dashboard at http://%s:%d/ — checking %d endpoint(s) every %ds "
@@ -1267,7 +1302,8 @@ def run_forever(cfg, host, port, args=None, config_path=None):
              cfg.get("interval_seconds", 30))
     try:
         serve(history, live_endpoints, host=host, port=port,
-              status_page_sources=live_sources, sla_alerts=sla_alerts)
+              status_page_sources=live_sources, sla_alerts=sla_alerts,
+              cert_alerts=cert_alerts)
     except KeyboardInterrupt:
         stop.set()
     finally:

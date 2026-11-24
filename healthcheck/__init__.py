@@ -7,12 +7,16 @@ when an endpoint changes state, or a periodic digest that batches
 the changes into one summary (webhook and/or a rendered email body).
 An endpoint that falls below its SLA target in the current month
 fires one webhook alert for the month, and the breach shows on the
-dashboard and in GET /api/status.
+dashboard and in GET /api/status. An endpoint whose TLS certificate
+enters its warning window fires one webhook alert for that
+certificate, and the alert shows on the dashboard and in
+GET /api/status too.
 """
 
-__version__ = "0.39.0"
+__version__ = "0.40.0"
 
-from .alerts import (SlaBreachAlerter, WebhookAlerter, alert_payload,
+from .alerts import (CertExpiryAlerter, SlaBreachAlerter, WebhookAlerter,
+                     alert_payload, cert_expiry_alert_payload,
                      post_alert, sla_breach_payload)
 
 from .checker import (DEFAULT_CERT_EXPIRY_WARN_DAYS, CheckResult,
@@ -23,7 +27,8 @@ from .checker import (DEFAULT_CERT_EXPIRY_WARN_DAYS, CheckResult,
 from .cli import (apply_check_interval_overrides, apply_max_latency_overrides,
                   dry_run_check, endpoint_interval, format_check_line,
                   install_reload_handler, load_status_page_source,
-                  make_sla_alerter, merged_status_page_sources, monitor_loop,
+                  make_cert_alerter, make_sla_alerter,
+                  merged_status_page_sources, monitor_loop,
                   parse_check_interval, parse_max_latency, reload_config,
                   retry_enabled, select_check_targets,
                   validate_cert_expiry_warnings, validate_check_intervals,
@@ -53,6 +58,7 @@ from .store import History
 __all__ = [
     "__version__",
     "ApiStatusHistory",
+    "CertExpiryAlerter",
     "CheckResult",
     "DEFAULT_CERT_EXPIRY_WARN_DAYS",
     "DEFAULT_DIGEST_INTERVAL_SECONDS",
@@ -67,6 +73,7 @@ __all__ = [
     "breaches",
     "build_digest",
     "cert_expiring_soon",
+    "cert_expiry_alert_payload",
     "cert_expiry_days",
     "check_endpoint",
     "check_endpoint_with_retry",
@@ -85,6 +92,7 @@ __all__ = [
     "install_reload_handler",
     "load_status_page_source",
     "maintenance_result",
+    "make_cert_alerter",
     "make_sla_alerter",
     "merged_status_page_sources",
     "monitor_loop",
