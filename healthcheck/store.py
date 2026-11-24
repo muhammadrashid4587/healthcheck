@@ -56,8 +56,8 @@ class History:
         checks = self._checks.get(name)
         return checks[-1] if checks else None
 
-    def recent_incidents(self, name, limit=5, now=None):
-        """Recent outage incidents for an endpoint, newest first.
+    def _group_incidents(self, name, now=None):
+        """All outage incidents for an endpoint, newest first.
 
         Consecutive confirmed-down checks form one incident: it
         starts at the first down check and ends at the first
@@ -102,7 +102,30 @@ class History:
         for incident in incidents:
             end = incident["end"] if incident["end"] is not None else ref
             incident["duration_s"] = round(end - incident["start"], 1)
-        return incidents[::-1][:limit]
+        return incidents[::-1]
+
+    def recent_incidents(self, name, limit=5, now=None):
+        """Recent outage incidents for an endpoint, newest first.
+
+        At most `limit` incidents (default 5); see
+        `_group_incidents` for the grouping rules. An ongoing
+        incident has `end` None and its duration runs to `now`
+        (the current time when not given).
+        """
+        return self._group_incidents(name, now=now)[:limit]
+
+    def incidents_total(self, name):
+        """Total recorded incidents for an endpoint.
+
+        The count of every incident in the recorded history —
+        the same grouping `recent_incidents` uses, without its
+        per-endpoint cap, so a counter built on this can never
+        disagree with the incident lists. The bounded history
+        can truncate a very long past, so this counts the
+        incidents still recorded, not necessarily every incident
+        since the monitor first ran.
+        """
+        return len(self._group_incidents(name))
 
     def down_since(self, name):
         """Epoch second the current outage started, or None.

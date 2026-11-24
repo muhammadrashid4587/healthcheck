@@ -583,14 +583,18 @@ omitted for a never-checked, SKIPPED, or maintenance endpoint),
 checks that were up, all-time) plus `healthcheck_uptime_ratio_24h`
 and `healthcheck_uptime_ratio_7d`, `healthcheck_latency_ms` (summary
 with `quantile="0.5" / "0.95" / "0.99"` in ms over the last 24 hours,
-plus `_sum` and `_count`), and `healthcheck_checks_total` (counter,
-split by `result="success"` / `"failure"`). The same exclusion rules
-apply as everywhere else: skipped and maintenance checks never ran,
-so they are omitted from the up gauge and the totals and carry no
-latency; a failure below the flap threshold still shows UP and counts
-as a failure in the totals, since the check did fail. An endpoint
-with no counted data in a window has no series for that window —
-no data is not downtime.
+plus `_sum` and `_count`), `healthcheck_checks_total` (counter,
+split by `result="success"` / `"failure"`), and
+`healthcheck_incidents_total` (counter, total recorded incidents
+per endpoint — runs of consecutive confirmed-down checks — from
+the same grouping the incident lists use, so the counter and the
+lists can never disagree; always present, even at 0). The same
+exclusion rules apply as everywhere else: skipped and maintenance
+checks never ran, so they are omitted from the up gauge and the
+totals and carry no latency; a failure below the flap threshold
+still shows UP and counts as a failure in the totals, since the
+check did fail. An endpoint with no counted data in a window has
+no series for that window — no data is not downtime.
 
 ## SLA report
 
@@ -890,8 +894,24 @@ make test   # python3 -m unittest discover -s tests -v
   `History.recent_incidents()`, so the endpoint, the dashboard,
   `GET /api/status`, and the static status page can never
   disagree — done in 0.35.0.
+- [x] Incidents total in the Prometheus export: `GET /metrics`
+  gains a `healthcheck_incidents_total` counter per endpoint —
+  the total recorded incidents (runs of consecutive
+  confirmed-down checks) from the same grouping the incident
+  lists use, so the counter and the lists can never disagree;
+  always present, even at 0 — done in 0.36.0.
 
 ## Changelog
+
+- **0.36.0** — Incidents total in the Prometheus export: `GET
+  /metrics` gains a `healthcheck_incidents_total` counter per
+  endpoint — the total recorded incidents (runs of consecutive
+  confirmed-down checks), from the same `History.incidents_total()`
+  grouping the incident lists use, so the counter and the lists
+  can never disagree. Always present, even at 0; the grouping
+  moved onto a shared `History._group_incidents()`, so the counter,
+  `GET /api/incidents`, the dashboard, `GET /api/status`, and the
+  static status page all report the same incidents.
 
 - **0.35.0** — Recent incidents over HTTP: `GET /api/incidents`
   serves the recent incidents per endpoint as JSON — newest

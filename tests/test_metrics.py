@@ -150,6 +150,72 @@ class MetricsTests(unittest.TestCase):
         self.assertEqual(m[("healthcheck_checks_total",
                             (("name", "app"), ("result", "failure")))], "0")
 
+    def test_incidents_total_counts_closed_and_ongoing(self):
+        hist = History()
+        base = 1_700_000_000.0
+        # web: one closed incident (2 downs, recovery) and one
+        # ongoing incident (1 down, no recovery yet).
+        hist.record(_result("web", True, at=base))
+        hist.record(_result("web", False, at=base + 1))
+        hist.record(_result("web", False, at=base + 2))
+        hist.record(_result("web", True, at=base + 3))
+        hist.record(_result("web", False, at=base + 4))
+        # db: one closed incident of 2 downs.
+        hist.record(_result("db", False, at=base))
+        hist.record(_result("db", False, at=base + 1))
+        hist.record(_result("db", True, at=base + 2))
+        m = _metrics(render_metrics(hist, self.endpoints + [
+            {"name": "fresh", "type": "tcp", "host": "127.0.0.1",
+             "port": 1}], now=base + 10))
+        self.assertEqual(m[("healthcheck_incidents_total",
+                            (("name", "web"),))], "2")
+        self.assertEqual(m[("healthcheck_incidents_total",
+                            (("name", "db"),))], "1")
+        # An endpoint with no incidents still gets a 0 series.
+        self.assertEqual(m[("healthcheck_incidents_total",
+                            (("name", "fresh"),))], "0")
+
+    def test_incidents_total_ignores_skips_unconfirmed_and_maintenance(self):
+        hist = History()
+        base = 1_700_000_000.0
+        # An unconfirmed failure never starts an incident.
+        hist.record(_result("app", True, at=base))
+        hist.record(_result("app", False, at=base + 1, unconfirmed=True))
+        hist.record(_result("app", True, at=base + 2))
+        # A skip in the middle of a run of downs does not split it,
+        # and a maintenance round does not end it either.
+        hist.record(_result("svc", False, at=base))
+        hist.record(_result("svc", False, at=base + 1, skipped=True,
+                            depends_on="db"))
+        hist.record(_result("svc", False, at=base + 2, maintenance=True))
+        hist.record(_result("svc", True, at=base + 3))
+        m = _metrics(render_metrics(hist, [
+            {"name": "app", "type": "http", "url": "http://x"},
+            {"name": "svc", "type": "tcp", "host": "127.0.0.1",
+             "port": 1}], now=base + 10))
+        self.assertEqual(m[("healthcheck_incidents_total",
+                            (("name", "app"),))], "0")
+        self.assertEqual(m[("healthcheck_incidents_total",
+                            (("name", "svc"),))], "1")
+
+    def test_incidents_total_agrees_with_incidents_snapshot(self):
+        # With at most 5 incidents the counter is exactly the number
+        # of incidents the /api/incidents snapshot lists, because
+        # both read the same grouping.
+        from healthcheck.server import incidents_snapshot
+        hist = History()
+        base = 1_700_000_000.0
+        for i in range(3):
+            hist.record(_result("web", False, at=base + 2 * i))
+            hist.record(_result("web", True, at=base + 2 * i + 1))
+        snap = incidents_snapshot(hist, self.endpoints[:1], now=base + 10)
+        m = _metrics(render_metrics(hist, self.endpoints[:1],
+                                    now=base + 10))
+        self.assertEqual(
+            m[("healthcheck_incidents_total", (("name", "web"),))],
+            str(len(snap["endpoints"][0]["incidents"])))
+        self.assertEqual(len(snap["endpoints"][0]["incidents"]), 3)
+
     def test_label_values_are_escaped(self):
         hist = History()
         hist.record(_result('we"ird\\name', True))
@@ -178,6 +244,13 @@ class MetricsTests(unittest.TestCase):
         m = _metrics(body)
         self.assertEqual(m[("healthcheck_up", (("name", "web"),))], "1")
         self.assertEqual(m[("healthcheck_up", (("name", "db"),))], "0")
+        # The live endpoint serves the incidents counter too: db's
+        # single confirmed-down check is one ongoing incident,
+        # web has none.
+        self.assertEqual(m[("healthcheck_incidents_total",
+                            (("name", "web"),))], "0")
+        self.assertEqual(m[("healthcheck_incidents_total",
+                            (("name", "db"),))], "1")
 
 
 if __name__ == "__main__":

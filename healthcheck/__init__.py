@@ -10,7 +10,7 @@ fires one webhook alert for the month, and the breach shows on the
 dashboard and in GET /api/status.
 """
 
-__version__ = "0.35.0"
+__version__ = "0.36.0"
 
 from .alerts import (SlaBreachAlerter, WebhookAlerter, alert_payload,
                      post_alert, sla_breach_payload)

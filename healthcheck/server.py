@@ -279,7 +279,7 @@ def render_metrics(history, endpoints, now=None):
     """Prometheus text format for every endpoint.
 
     `now` pins the 24-hour / 7-day windows; it defaults to the
-    current time. Four metric families:
+    current time. Five metric families:
 
     - ``healthcheck_up`` (gauge): 1 when the endpoint is currently
       UP, 0 when DOWN. An endpoint that was never checked, is
@@ -305,6 +305,13 @@ def render_metrics(history, endpoints, now=None):
       maintenance checks never ran and are not counted; an
       unconfirmed failure counts as a failure, since the check did
       fail. Both series are always present, even at 0.
+    - ``healthcheck_incidents_total`` (counter): total recorded
+      incidents (runs of consecutive confirmed-down checks) for
+      the endpoint, from the same ``History.incidents_total()``
+      grouping the incident lists use, so the counter and the
+      lists can never disagree. Always present, even at 0; the
+      bounded history can truncate a very long past, so it counts
+      the incidents still recorded.
     """
     lines = []
     lines.append("# HELP healthcheck_up Whether the endpoint is "
@@ -381,6 +388,13 @@ def render_metrics(history, endpoints, now=None):
                      f'result="success"}} {counts["success"]}')
         lines.append(f'healthcheck_checks_total{{name="{name}",'
                      f'result="failure"}} {counts["failure"]}')
+    lines.append("# HELP healthcheck_incidents_total Total recorded "
+                 "incidents (runs of consecutive confirmed-down checks).")
+    lines.append("# TYPE healthcheck_incidents_total counter")
+    for ep in endpoints:
+        name = _prom_label(ep["name"])
+        lines.append(f'healthcheck_incidents_total{{name="{name}"}} '
+                     f"{history.incidents_total(ep['name'])}")
     return "\n".join(lines) + "\n"
 
 
