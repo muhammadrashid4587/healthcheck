@@ -132,6 +132,49 @@ class History:
         """
         return len(self._group_incidents(name))
 
+    # Log-spaced bucket edges (seconds) for the incident-duration
+    # histogram: a bucket's lower edge is inclusive, its upper edge
+    # exclusive; the last bucket is open-ended. The steps (1m, 5m,
+    # 15m, 1h, 6h, 24h) are roughly log-spaced, so a blip, a short
+    # outage, and a day-long outage land in different buckets
+    # instead of all piling into one linear bin.
+    DURATION_HISTOGRAM_BUCKETS = (
+        ("< 1m", 0, 60),
+        ("1m – 5m", 60, 300),
+        ("5m – 15m", 300, 900),
+        ("15m – 1h", 900, 3600),
+        ("1h – 6h", 3600, 21600),
+        ("6h – 24h", 21600, 86400),
+        ("> 24h", 86400, None),
+    )
+
+    def incident_duration_histogram(self, name, limit=None, now=None):
+        """A duration histogram over an endpoint's incidents.
+
+        One entry per bucket — {"label", "min_s", "max_s", "count"}
+        — with every bucket present even at 0, so the shape is
+        stable. The incidents are the same `_group_incidents`
+        grouping `recent_incidents` uses (an ongoing incident's
+        duration runs to `now`), and `limit` caps them newest
+        first the same way, so a histogram built for an export
+        can never disagree with the incidents that export lists.
+        """
+        incidents = self._group_incidents(name, now=now)
+        if limit is not None:
+            incidents = incidents[:limit]
+        counts = [0] * len(self.DURATION_HISTOGRAM_BUCKETS)
+        for incident in incidents:
+            for i, (_label, low, high) in enumerate(
+                    self.DURATION_HISTOGRAM_BUCKETS):
+                if incident["duration_s"] >= low and (
+                        high is None or incident["duration_s"] < high):
+                    counts[i] += 1
+                    break
+        return [{"label": label, "min_s": low, "max_s": high,
+                 "count": count}
+                for (label, low, high), count in zip(
+                    self.DURATION_HISTOGRAM_BUCKETS, counts)]
+
     def down_since(self, name):
         """Epoch second the current outage started, or None.
 

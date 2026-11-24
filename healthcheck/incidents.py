@@ -23,11 +23,16 @@ def incidents_report(history, endpoints, now=None, name=None, limit=None):
     """One row per endpoint plus totals.
 
     Each row is {"name", "incidents", "total_incidents",
-    "ongoing_incidents", "total_downtime_seconds"} where
+    "ongoing_incidents", "total_downtime_seconds",
+    "duration_histogram"} where
     "incidents" is the endpoint's full recorded incident list,
     newest first — each {"start", "end", "checks", "ongoing",
     "duration_s"} from `History.recent_incidents()`, so the
     export reports exactly what the dashboard and the APIs show.
+    "duration_histogram" is the same incidents bucketed by
+    duration (`History.incident_duration_histogram`, same limit),
+    so the histogram can never disagree with the incidents the
+    row lists.
     An ongoing incident has "end" None and its duration runs to
     `now` (the current time when not given). Returns
     {"generated_at", "endpoints", "totals"} where "totals" sums
@@ -64,6 +69,9 @@ def incidents_report(history, endpoints, now=None, name=None, limit=None):
                 1 for i in incidents if i["ongoing"]),
             "total_downtime_seconds": round(
                 sum(i["duration_s"] for i in incidents), 1),
+            "duration_histogram":
+                history.incident_duration_histogram(
+                    ep["name"], limit=limit, now=ref),
         })
     return {
         "generated_at": ref,
@@ -92,7 +100,9 @@ def render_incidents_report(report):
     One line per endpoint with its incident count, how many are
     ongoing, and its total downtime, then one line per incident
     with its start and end (or "ongoing"), duration, and failed
-    check count; a totals line at the end.
+    check count, then the endpoint's duration histogram (log-spaced
+    buckets over the same incidents — omitted when the endpoint
+    has no incidents); a totals line at the end.
     """
     lines = ["Incident report (generated "
              f"{_fmt_time(report['generated_at'])})"]
@@ -111,6 +121,11 @@ def render_incidents_report(report):
                 f"    {_fmt_time(incident['start'])} – {end} "
                 f"({incident['duration_s']:.1f}s, "
                 f"{_plural(incident['checks'], 'check')})")
+        if row["total_incidents"]:
+            lines.append("    Duration histogram:")
+            for bucket in row["duration_histogram"]:
+                lines.append(f"      {bucket['label']}: "
+                             f"{bucket['count']}")
     totals = report["totals"]
     line = _plural(totals["total_incidents"], "incident") + " total"
     if totals["ongoing_incidents"]:

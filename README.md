@@ -755,7 +755,15 @@ ongoing, duration_s, checks`, with `end` empty for an ongoing
 incident); the JSON is `{"generated_at", "endpoints": [...],
 "totals": {...}}` with the full incident list and the
 per-endpoint counts (`total_incidents`, `ongoing_incidents`,
-`total_downtime_seconds`) plus the totals across endpoints.
+`total_downtime_seconds`) plus the totals across endpoints. The
+text report also prints a per-endpoint duration histogram after
+each endpoint's incidents — log-spaced buckets over the same
+incidents (`< 1m`, `1m – 5m`, `5m – 15m`, `15m – 1h`, `1h – 6h`,
+`6h – 24h`, `> 24h`), so a glance shows whether outages are
+mostly blips or mostly long ones; the same histogram is in each
+JSON row (`duration_histogram`). An endpoint with no incidents
+gets no histogram, and a filtered export's histogram covers only
+the incidents actually exported.
 
 ## Tests
 
@@ -1057,8 +1065,35 @@ make test   # python3 -m unittest discover -s tests -v
   gains the alert time in the Cert expires column ("5d (soon)
   alerted 06:12") and `GET /api/status` gains
   `cert_expiry_alerted_at` per endpoint — done in 0.40.0.
+- [x] Per-incident duration histogram in the `--incidents`
+  text report: each endpoint's incidents are bucketed by
+  duration into log-spaced buckets (`< 1m`, `1m – 5m`,
+  `5m – 15m`, `15m – 1h`, `1h – 6h`, `6h – 24h`, `> 24h`),
+  printed after the endpoint's incident lines (omitted when
+  it has no incidents), from the same
+  `History.recent_incidents()` / `_group_incidents()` data as
+  the rest of the report — and the same `--endpoint` /
+  `--limit` filters — so the histogram can never disagree
+  with the incidents listed. The JSON export carries the same
+  histogram per endpoint (`duration_histogram`) — done in
+  0.41.0.
 
 ## Changelog
+
+- **0.41.0** — Per-incident duration histogram in the
+  `--incidents` text report: `History.incident_duration_histogram()`
+  buckets an endpoint's incidents by duration into log-spaced
+  buckets (`< 1m`, `1m – 5m`, `5m – 15m`, `15m – 1h`, `1h – 6h`,
+  `6h – 24h`, `> 24h`), from the same `_group_incidents()`
+  grouping the incident lists use, with the same `--endpoint` /
+  `--limit` filters applied, so the histogram can never
+  disagree with the incidents the export lists. The text report
+  prints the histogram after each endpoint's incident lines
+  (omitted for an endpoint with no incidents), and the JSON
+  export carries it per endpoint as `duration_histogram`; the
+  CSV is unchanged (one row per incident). An ongoing
+  incident's duration runs to the export time, like everywhere
+  else.
 
 - **0.40.0** — Webhook alerting on TLS certificate expiry: when
   an endpoint's certificate enters its warning window (its
