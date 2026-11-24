@@ -124,7 +124,9 @@ endpoint, and serves a small status dashboard over `http.server`.
   JSON instead (with `--sla-out PATH` to write it to a file),
   adding per-endpoint incident counts, downtime in the month,
   and latency p50/p95/p99 over the month, so the report can go
-  into a spreadsheet or a script.
+  into a spreadsheet or a script. `GET /api/sla` on the
+  dashboard server serves the same JSON live (current month,
+  or `?month=YYYY-MM` for another month).
 - Config hot-reload: while the monitor is running, edit
   `config.json` and send SIGHUP (`kill -HUP <pid>`); the new
   endpoints, check interval, per-endpoint check intervals,
@@ -565,6 +567,12 @@ latency_p50_ms, latency_p95_ms, latency_p99_ms, sla_target, met,
 shortfall_pct`); the JSON is `{"month", "endpoints": [...],
 "breaches": [...]}` with the same fields per endpoint.
 
+The same JSON is also served live while the monitor runs:
+`GET /api/sla` on the dashboard server returns the current
+month's report, and `GET /api/sla?month=2026-11` a past month
+(a bad month is a 400 with a JSON error). It is built from the
+same computation as the export, so the two can never disagree.
+
 ## Tests
 
 ```sh
@@ -730,8 +738,33 @@ make test   # python3 -m unittest discover -s tests -v
   month — incident grouping and the uptime exclusions follow
   the same rules as the text report and the status page — done
   in 0.29.0.
+- [x] SLA report over HTTP (`GET /api/sla` on the dashboard
+  server): the same monthly SLA report as JSON — the month,
+  one object per endpoint (uptime, checks, incidents,
+  downtime, latency p50/p95/p99, target, met, shortfall), and
+  the breach list — served live from the persisted history, so
+  a script can poll it instead of re-running the export. With
+  no query it serves the current month; `?month=YYYY-MM`
+  names another month, and a bad month is a 400 with a JSON
+  error. It reuses the export's payload builder, so the
+  endpoint and `--sla-format json` can never disagree — done
+  in 0.30.0.
 
 ## Changelog
+
+- **0.30.0** — SLA report over HTTP: `GET /api/sla` on the
+  dashboard server returns the monthly SLA report as JSON — the
+  month, one object per endpoint (uptime_pct, checks,
+  failed_checks, incidents, downtime_seconds, latency p50/p95/
+  p99, sla_target, met, shortfall_pct), and the breach list.
+  With no query it serves the current month (local time);
+  `?month=YYYY-MM` names another month, and a bad month is a
+  400 with a JSON `{"error": ...}` body. The endpoint and the
+  `--sla-format json` export share one payload builder
+  (`sla_report_payload`), so the two can never disagree; the
+  rows come from the same `sla_report` computation, with the
+  same exclusion rules (skips, unconfirmed failures, and
+  maintenance rounds count neither for nor against the month).
 
 - **0.29.0** — SLA report CSV/JSON export: `--sla-report
   YYYY-MM --sla-format csv` / `json` exports the monthly SLA

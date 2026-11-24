@@ -7,7 +7,7 @@ when an endpoint changes state, or a periodic digest that batches
 the changes into one summary (webhook and/or a rendered email body).
 """
 
-__version__ = "0.29.0"
+__version__ = "0.30.0"
 
 from .checker import (CheckResult, check_endpoint,
                       check_endpoint_with_retry, check_http, check_tcp,
@@ -29,10 +29,12 @@ from .flap import DEFAULT_THRESHOLD, FlapDetector, FlapOutcome
 from .maintenance import (active_window, in_maintenance, summarize_windows,
                           validate_maintenance_windows)
 from .remote import ApiStatusHistory, fetch_remote_status
-from .server import latency_sparkline, render_metrics, status_snapshot
+from .server import (latency_sparkline, render_metrics, sla_snapshot,
+                     status_snapshot)
 from .sla import (breaches, monthly_detail, monthly_uptime, parse_month,
                   render_sla_report, render_sla_report_csv,
-                  render_sla_report_json, sla_report, validate_sla_targets)
+                  render_sla_report_json, sla_report,
+                  sla_report_payload, validate_sla_targets)
 from .statuspage import endpoint_status, recent_incidents, render_status_page, write_status_page
 from .store import History
 
@@ -85,6 +87,8 @@ __all__ = [
     "send_digest_email",
     "select_check_targets",
     "sla_report",
+    "sla_report_payload",
+    "sla_snapshot",
     "status_snapshot",
     "summarize_windows",
     "validate_check_intervals",

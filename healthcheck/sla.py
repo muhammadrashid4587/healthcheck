@@ -279,12 +279,22 @@ def render_sla_report_csv(report, year, month):
     return out.getvalue()
 
 
-def render_sla_report_json(report, year, month):
-    """Render an SLA report as JSON: the month, one object per
-    endpoint (the full `sla_report` row), and the breach list."""
-    payload = {
+def sla_report_payload(report, year, month):
+    """The JSON payload for an SLA report: the month, one object
+    per endpoint (the full `sla_report` row), and the breach list.
+
+    Both the `--sla-format json` export and the dashboard's
+    GET /api/sla build on this, so the two can never disagree.
+    """
+    return {
         "month": f"{year:04d}-{month:02d}",
         "endpoints": report,
         "breaches": [r["name"] for r in breaches(report)],
     }
-    return json.dumps(payload, indent=2) + "\n"
+
+
+def render_sla_report_json(report, year, month):
+    """Render an SLA report as JSON: the month, one object per
+    endpoint (the full `sla_report` row), and the breach list."""
+    return json.dumps(sla_report_payload(report, year, month),
+                      indent=2) + "\n"

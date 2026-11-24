@@ -4,7 +4,9 @@ GET / renders a plain HTML table: each endpoint, its current status,
 its expected vs actual HTTP status, uptime %, most recent latency,
 a sparkline of recent latencies, and last check time. GET /api/status returns the same data as JSON, for
 scripts and other tools that want to consume the live status without
-scraping the HTML. GET /metrics returns the same data in Prometheus
+scraping the HTML. GET /api/sla returns the monthly SLA report as
+JSON — the same payload as `--sla-report --sla-format json`, for
+the current month unless `?month=YYYY-MM` names another. GET /metrics returns the same data in Prometheus
 text format, so a Prometheus server can scrape it. A check skipped
 because its dependency is not UP renders as SKIPPED, with the
 dependency named in the Depends on column; an endpoint inside a
@@ -18,8 +20,10 @@ import html
 import json
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 
 from .maintenance import summarize_windows
+from .sla import parse_month, sla_report, sla_report_payload
 
 
 def latency_sparkline(history, name, width=100, height=24):
@@ -143,6 +147,30 @@ def status_snapshot(history, endpoints, now=None,
         snapshot["status_page_sources"] = [
             dict(src) for src in status_page_sources]
     return snapshot
+
+
+def sla_snapshot(history, endpoints, year=None, month=None):
+    """The monthly SLA report as a JSON-ready dict: the same
+    payload `--sla-report --sla-format json` writes, built from
+    the same `sla_report` rows, so the endpoint and the export
+    can never disagree.
+
+    With no month given, the current calendar month (local time)
+    is used. Each endpoint row has `name`, `target` (the
+    configured `sla_target`, or None), `uptime_pct` (None when
+    the month has no counted checks), `checks`, `met`, and
+    `shortfall_pct`, plus the month detail — `incidents`
+    (confirmed outages that overlapped the month),
+    `failed_checks`, `downtime_seconds` (outage time inside the
+    month), and `latency` (p50/p95/p99 in ms, or None). The
+    payload also carries `breaches`, the names of the endpoints
+    that fell short of their target, worst shortfall first.
+    """
+    if year is None or month is None:
+        now = time.localtime()
+        year, month = now.tm_year, now.tm_mon
+    report = sla_report(history, endpoints, year, month)
+    return sla_report_payload(report, year, month)
 
 
 def _prom_label(value):
@@ -350,6 +378,39 @@ def make_handler(history, endpoints, status_page_sources=None):
                 payload = json.dumps(
                     status_snapshot(history, endpoints,
                                     status_page_sources=status_page_sources)
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+            parsed = urlsplit(self.path)
+            if parsed.path == "/api/sla":
+                # ?month=YYYY-MM names the month; without it the
+                # current month is served. A bad month is a 400,
+                # not a 404: the path is right, the input is not.
+                query = parse_qs(parsed.query)
+                month_param = query.get("month", [None])[0]
+                if month_param is None:
+                    now = time.localtime()
+                    year, month = now.tm_year, now.tm_mon
+                else:
+                    try:
+                        year, month = parse_month(month_param)
+                    except ValueError as exc:
+                        error = json.dumps(
+                            {"error": str(exc)}).encode("utf-8")
+                        self.send_response(400)
+                        self.send_header("Content-Type",
+                                         "application/json")
+                        self.send_header("Content-Length",
+                                         str(len(error)))
+                        self.end_headers()
+                        self.wfile.write(error)
+                        return
+                payload = json.dumps(
+                    sla_snapshot(history, endpoints, year, month)
                 ).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
