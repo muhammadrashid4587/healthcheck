@@ -2,7 +2,7 @@
 HTML file that can be hosted anywhere with no server.
 
 `render_status_page` builds the same view as the live dashboard —
-current status per endpoint, uptime all-time / 24h / 7d, most recent
+current status per endpoint, uptime all-time / 24h / 7d / 30d, most recent
 latency, an inline latency sparkline — plus a recent-incidents list
 per endpoint, derived from the persisted check history, and each
 endpoint's per-incident duration histogram over those same
@@ -96,6 +96,15 @@ def _render_source(history, endpoints, generated, label=None):
         uptime = history.uptime_pct(name)
         up_24h = history.uptime_pct_window(name, 24 * 3600, now=generated)
         up_7d = history.uptime_pct_window(name, 7 * 24 * 3600, now=generated)
+        # The 30-day figure comes from the same
+        # `uptime_pct_window` the API reports as `uptime_30d_pct`
+        # (and the same math `window_summary` uses for a local
+        # history), rather than `window_summary` itself: a remote
+        # source carries no per-check records, so `window_summary`
+        # would report no data for it while the remote's own
+        # reported 30-day figure is available here.
+        up_30d = history.uptime_pct_window(name, 30 * 24 * 3600,
+                                           now=generated)
         cur = history.current(name)
         if cur is None or cur.get("maintenance", False) \
                 or cur.get("skipped", False):
@@ -110,13 +119,14 @@ def _render_source(history, endpoints, generated, label=None):
         up = f"{uptime:.1f}%" if uptime is not None else "-"
         day = f"{up_24h:.1f}%" if up_24h is not None else "-"
         week = f"{up_7d:.1f}%" if up_7d is not None else "-"
+        month = f"{up_30d:.1f}%" if up_30d is not None else "-"
         cls = ("up" if status == "UP" else "down" if status == "DOWN"
                else "skipped" if status == "SKIPPED"
                else "maintenance" if status == "MAINTENANCE" else "")
         rows.append(
             f"<tr><td>{html.escape(name)}</td>"
             f"<td class=\"{cls}\">{status}{status_detail}</td>"
-            f"<td>{up}</td><td>{day}</td><td>{week}</td><td>{latency}</td>"
+            f"<td>{up}</td><td>{day}</td><td>{week}</td><td>{month}</td><td>{latency}</td>"
             f"<td>{latency_sparkline(history, name)}</td><td>{last}</td></tr>"
         )
         incidents = recent_incidents(history, name, now=generated)
@@ -148,7 +158,7 @@ def _render_source(history, endpoints, generated, label=None):
                 f"<h3>{html.escape(name)}</h3><ul>{''.join(items)}</ul>"
                 f"<p>Duration histogram: {buckets}</p>")
     body = "\n".join(rows) or \
-        "<tr><td colspan=\"8\">No endpoints configured.</td></tr>"
+        "<tr><td colspan=\"9\">No endpoints configured.</td></tr>"
     if down_count:
         banner = (f"<p class=\"banner down\">{down_count} endpoint"
                   f"{'s' if down_count != 1 else ''} down</p>")
@@ -159,7 +169,7 @@ def _render_source(history, endpoints, generated, label=None):
                       else "<p>No incidents recorded.</p>")
     table = (
         "<table><tr><th>Endpoint</th><th>Status</th><th>Uptime</th>"
-        "<th>Uptime 24h</th><th>Uptime 7d</th><th>Latency</th>"
+        "<th>Uptime 24h</th><th>Uptime 7d</th><th>Uptime 30d</th><th>Latency</th>"
         "<th>Latency history</th><th>Last check</th></tr>\n"
         f"{body}</table>")
     if label is None:

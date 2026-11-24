@@ -130,8 +130,25 @@ class RenderTests(unittest.TestCase):
         self.assertIn("75.0%", page)   # web: 3/4 up overall
         self.assertIn("Uptime 24h", page)
         self.assertIn("Uptime 7d", page)
+        self.assertIn("Uptime 30d", page)
         self.assertIn("<svg", page)    # latency sparkline, inline
         self.assertIn("<polyline", page)
+
+    def test_page_30d_column_reads_the_30d_window(self):
+        # A down check 20 days ago is inside the 30d window but
+        # outside the 24h/7d ones; one 40 days ago is outside all
+        # of them. The 30d column must show 2/3 up while 24h and
+        # 7d show 100% — it is not a copy of the 7d column.
+        hist = History()
+        hist.record(_result("web", False, at=BASE - 40 * 86400))
+        hist.record(_result("web", False, at=BASE - 20 * 86400))
+        hist.record(_result("web", True, at=BASE))
+        hist.record(_result("web", True, at=BASE + 60))
+        page = render_status_page(
+            hist, self.endpoints[:1], now=BASE + 200)
+        self.assertIn(
+            "<td>50.0%</td><td>100.0%</td><td>100.0%</td>"
+            "<td>66.7%</td>", page)
 
     def test_banner_reports_down_endpoints(self):
         page = render_status_page(self.history, self.endpoints, now=BASE + 200)

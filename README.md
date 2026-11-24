@@ -96,7 +96,7 @@ endpoint, and serves a small status dashboard over `http.server`.
   (0 when up).
 - A static status page: `python3 -m healthcheck.cli --config config.json --status-page status.html`
   renders the same view as the dashboard — current status, uptime
-  24h/7d, latency sparkline — plus a recent-incidents list per
+  24h/7d/30d, latency sparkline — plus a recent-incidents list per
   endpoint, as one self-contained HTML file with no external
   references, so it can be hosted anywhere with no server. It is a
   snapshot of the persisted history; regenerate it to update it.
@@ -550,7 +550,7 @@ fired appended when one went out for the current certificate,
 e.g. "5d (soon) alerted 06:12"),
 the endpoint it depends on (or `-`), its maintenance windows (or `-`), uptime % over the
 recorded history, uptime %
-over the last 24 hours and the last 7 days (a `-` when no checks fall
+over the last 24 hours, the last 7 days, and the last 30 days (a `-` when no checks fall
 in that window — no data is not downtime), most recent
 latency, the endpoint's latency budget (`max_latency_ms`, or `-`
 when it has none), the endpoint's own check interval
@@ -1152,9 +1152,38 @@ make test   # python3 -m unittest discover -s tests -v
   prints "no data" instead of a percentage, while its downtime
   is still shown; `--uptime-out PATH` writes the report to a
   file instead of printing it — done in 0.47.0.
+- [x] 30-day uptime column on the dashboard and the static status
+  page: the live dashboard gains a Uptime 30d column next to
+  Uptime 24h / 7d, and the static status page (`--status-page`)
+  gains one next to its Uptime 24h / 7d columns, so a slow
+  degradation over the last month is visible at a glance next to
+  the shorter windows. Both read the same figures `GET
+  /api/uptime` and `--uptime-report` serve — the dashboard from
+  `uptime_snapshot`, the static page from the same
+  `uptime_pct_window` the API reports as `uptime_30d_pct` (a
+  remote status-page source reports its own 30-day figure the
+  same way, since it carries no per-check records for
+  `window_summary` to work from) — so the two surfaces can never
+  disagree with the API or the text export. A window with no
+  counted checks shows `-`, like the 24h/7d columns — done in
+  0.48.0.
 
 ## Changelog
 
+- **0.48.0** — 30-day uptime column on the dashboard and the
+  static status page: the live dashboard gains a Uptime 30d
+  column next to Uptime 24h / 7d, and the static status page
+  gains one next to its Uptime 24h / 7d columns. Both read the
+  same figures `GET /api/uptime` and `--uptime-report` serve —
+  the dashboard from `uptime_snapshot` (the same helper the API
+  and the text report use), the static page from the same
+  `uptime_pct_window` the API reports as `uptime_30d_pct` — so
+  the surfaces can never disagree with each other, the API, or
+  the text export. A remote status-page source shows its own
+  reported 30-day figure, since a snapshot carries no per-check
+  records. A window with no counted checks shows `-`, like the
+  24h/7d columns. (Also fixes the version constant, which the
+  0.47.0 run left at 0.46.0.)
 - **0.47.0** — Uptime / SLA summary as a text export: a new
   `--uptime-report` flag prints the same per-endpoint summary
   `GET /api/uptime` returns — uptime %, total downtime, and

@@ -23,7 +23,8 @@ SNAPSHOT = {
         {"name": "web", "status": "UP", "depends_on": None,
          "maintenance_windows": [],
          "uptime_pct": 99.5, "uptime_24h_pct": 100.0,
-         "uptime_7d_pct": 99.0, "latency_ms": 12.5,
+         "uptime_7d_pct": 99.0, "uptime_30d_pct": 98.5,
+         "latency_ms": 12.5,
          "latency_percentiles": {"p50": 11.0, "p95": 20.0, "p99": 30.0},
          "last_checked_at": BASE + 180},
         {"name": "db", "status": "DOWN", "depends_on": None,
@@ -69,6 +70,8 @@ class SnapshotTests(unittest.TestCase):
             self.history.uptime_pct_window("web", 24 * 3600), 100.0)
         self.assertEqual(
             self.history.uptime_pct_window("web", 7 * 24 * 3600), 99.0)
+        self.assertEqual(
+            self.history.uptime_pct_window("web", 30 * 24 * 3600), 98.5)
         self.assertIsNone(self.history.uptime_pct("api"))
         self.assertIsNone(
             self.history.uptime_pct_window("db", 7 * 24 * 3600))
@@ -127,6 +130,7 @@ class RenderTests(unittest.TestCase):
         self.assertIn("<h2>local</h2>", page)
         self.assertIn("<h2>eu-west</h2>", page)
         self.assertIn("99.5%", page)   # remote web uptime, as reported
+        self.assertIn("98.5%", page)   # remote web 30d uptime, as reported
         self.assertIn("50.0%", page)   # remote db uptime, as reported
         self.assertIn("1 endpoint down", page)  # remote db is DOWN
         self.assertIn("SKIPPED", page)

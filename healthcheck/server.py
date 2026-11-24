@@ -670,10 +670,15 @@ def render_dashboard(history, endpoints, now=None,
     log-spaced buckets the --incidents text report prints, from
     History.incident_duration_histogram() with the same limit of
     5). With no incidents recorded anywhere the section is omitted.
+    The Uptime 30d column comes from the same `uptime_snapshot`
+    the API and the text report use, so the dashboard can never
+    disagree with them about a window.
     """
     current = time.localtime()
     report = {row["name"]: row for row in sla_report(
         history, endpoints, current.tm_year, current.tm_mon)}
+    uptime_snap = {row["name"]: row for row in uptime_snapshot(
+        history, endpoints, now=now)["endpoints"]}
     rows = []
     for ep in endpoints:
         name = ep["name"]
@@ -681,6 +686,7 @@ def render_dashboard(history, endpoints, now=None,
         uptime = history.uptime_pct(name)
         up_24h = history.uptime_pct_window(name, 24 * 3600, now=now)
         up_7d = history.uptime_pct_window(name, 7 * 24 * 3600, now=now)
+        up_30d = uptime_snap[name]["windows"]["30d"]["uptime_pct"]
         depends_on = ep.get("depends_on") or "-"
         windows = summarize_windows(ep.get("maintenance_windows"))
         if cur is None:
@@ -703,6 +709,7 @@ def render_dashboard(history, endpoints, now=None,
         up = f"{uptime:.1f}%" if uptime is not None else "-"
         day = f"{up_24h:.1f}%" if up_24h is not None else "-"
         week = f"{up_7d:.1f}%" if up_7d is not None else "-"
+        month = f"{up_30d:.1f}%" if up_30d is not None else "-"
         pct = history.latency_percentiles(name, now=now)
         pct_text = (f"{pct['p50']:.1f} / {pct['p95']:.1f} / {pct['p99']:.1f} ms"
                     if pct is not None else "-")
@@ -792,7 +799,7 @@ def render_dashboard(history, endpoints, now=None,
             f"<td>{html.escape(cert_text)}</td>"
             f"<td>{html.escape(depends_on)}</td>"
             f"<td>{html.escape(windows)}</td>"
-            f"<td>{up}</td><td>{day}</td><td>{week}</td><td>{latency}</td>"
+            f"<td>{up}</td><td>{day}</td><td>{week}</td><td>{month}</td><td>{latency}</td>"
             f"<td>{budget_text}</td>"
             f"<td>{interval_text}</td>"
             f"<td>{retries_text}</td>"
@@ -802,7 +809,7 @@ def render_dashboard(history, endpoints, now=None,
             f"<td>{html.escape(sla_text)}</td>"
             f"<td>{last}</td></tr>"
         )
-    body = "\n".join(rows) or "<tr><td colspan=\"19\">No endpoints configured.</td></tr>"
+    body = "\n".join(rows) or "<tr><td colspan=\"20\">No endpoints configured.</td></tr>"
     if status_page_sources:
         items = "".join(
             f"<li>{html.escape(src['label'])} — "
@@ -816,7 +823,7 @@ def render_dashboard(history, endpoints, now=None,
 <html><head><meta charset="utf-8"><title>healthcheck</title>
 <style>body{{font-family:sans-serif;max-width:720px;margin:2em auto}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccc;padding:6px 10px;text-align:left}}.up{{color:green;font-weight:bold}}.down{{color:red;font-weight:bold}}.skipped{{color:#b8860b;font-weight:bold}}.maintenance{{color:#6a5acd;font-weight:bold}}</style>
 </head><body><h1>healthcheck</h1>
-<table><tr><th>Endpoint</th><th>Status</th><th>Down since</th><th>HTTP status</th><th>Cert expires</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Latency</th><th>Latency budget</th><th>Check every</th><th>Retries</th><th>Latency p50 / p95 / p99</th><th>Latency history</th><th>Last error</th><th>SLA breach</th><th>Last check</th></tr>
+<table><tr><th>Endpoint</th><th>Status</th><th>Down since</th><th>HTTP status</th><th>Cert expires</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Uptime 30d</th><th>Latency</th><th>Latency budget</th><th>Check every</th><th>Retries</th><th>Latency p50 / p95 / p99</th><th>Latency history</th><th>Last error</th><th>SLA breach</th><th>Last check</th></tr>
 {body}</table>
 {incidents_html}{sources_html}<p>Rendered {time.strftime('%Y-%m-%d %H:%M:%S')} — reload to update.</p></body></html>"""
 

@@ -291,14 +291,39 @@ class DashboardTests(unittest.TestCase):
         page = render_dashboard(hist, [{"name": "web", "type": "http", "url": "http://example.com"}])
         self.assertIn("Uptime 24h", page)
         self.assertIn("Uptime 7d", page)
+        self.assertIn("Uptime 30d", page)
         self.assertIn("50.0%", page)  # 1/2 up in both windows and overall
+
+    def test_dashboard_30d_column_reads_the_30d_window(self):
+        # A down check 20 days ago is inside the 30d window but
+        # outside the 24h/7d ones; one 40 days ago is outside all
+        # of them. The 30d column must show 2/3 up while 24h and
+        # 7d show 100% — it is not a copy of the 7d column — and
+        # it must agree with the uptime_snapshot the API serves.
+        import time
+        from healthcheck.server import uptime_snapshot
+        now = time.time()
+        hist = History()
+        hist.record(_result("web", False, at=now - 40 * 86400))
+        hist.record(_result("web", False, at=now - 20 * 86400))
+        hist.record(_result("web", True, at=now - 60))
+        hist.record(_result("web", True, at=now - 30))
+        endpoints = [{"name": "web", "type": "http",
+                      "url": "http://example.com"}]
+        page = render_dashboard(hist, endpoints, now=now)
+        self.assertIn(
+            "<td>50.0%</td><td>100.0%</td><td>100.0%</td>"
+            "<td>66.7%</td>", page)
+        snap = uptime_snapshot(hist, endpoints, now=now)
+        self.assertEqual(
+            snap["endpoints"][0]["windows"]["30d"]["uptime_pct"], 66.7)
 
     def test_dashboard_windowed_uptime_dash_when_no_recent_checks(self):
         # Checks are from 2023, long outside both windows: dashes.
         page = render_dashboard(self.history, self.endpoints)
         self.assertIn("Uptime 24h", page)
-        # web row: all-history 100.0% plus two "-" window cells
-        self.assertIn("<td>100.0%</td><td>-</td><td>-</td>", page)
+        # web row: all-history 100.0% plus three "-" window cells
+        self.assertIn("<td>100.0%</td><td>-</td><td>-</td><td>-</td>", page)
 
     def test_html_escapes_endpoint_names(self):
         self.history.record(_result("<b>x</b>", True))
