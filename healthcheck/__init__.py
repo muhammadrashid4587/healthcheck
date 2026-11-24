@@ -13,7 +13,7 @@ certificate, and the alert shows on the dashboard and in
 GET /api/status too.
 """
 
-__version__ = "0.45.0"
+__version__ = "0.46.0"
 
 from .alerts import (CertExpiryAlerter, SlaBreachAlerter, WebhookAlerter,
                      alert_payload, cert_expiry_alert_payload,
@@ -47,7 +47,7 @@ from .maintenance import (active_window, in_maintenance, summarize_windows,
 from .remote import ApiStatusHistory, fetch_remote_status
 from .server import (format_duration, incidents_snapshot,
                      latency_sparkline, render_metrics, sla_snapshot,
-                     status_snapshot)
+                     status_snapshot, uptime_snapshot)
 from .sla import (breaches, monthly_detail, monthly_uptime, parse_month,
                   render_sla_report, render_sla_report_csv,
                   render_sla_report_json, sla_report,
@@ -125,6 +125,7 @@ __all__ = [
     "sla_snapshot",
     "status_snapshot",
     "summarize_windows",
+    "uptime_snapshot",
     "validate_cert_expiry_warnings",
     "validate_check_intervals",
     "validate_digest_config",

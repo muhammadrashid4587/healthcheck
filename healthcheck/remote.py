@@ -79,6 +79,7 @@ class ApiStatusHistory(History):
                     f"remote endpoint {ep['name']!r} has unknown "
                     f"status {status!r}")
             for key in ("uptime_pct", "uptime_24h_pct", "uptime_7d_pct",
+                        "uptime_30d_pct",
                         "latency_ms", "last_checked_at"):
                 value = ep.get(key)
                 if value is not None and not isinstance(value, (int, float)):
@@ -141,6 +142,8 @@ class ApiStatusHistory(History):
             return ep.get("uptime_24h_pct")
         if seconds == 7 * 24 * 3600:
             return ep.get("uptime_7d_pct")
+        if seconds == 30 * 24 * 3600:
+            return ep.get("uptime_30d_pct")
         return ep.get("uptime_pct")
 
     def latency_percentiles(self, name, seconds=24 * 3600, now=None):

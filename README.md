@@ -77,8 +77,13 @@ endpoint, and serves a small status dashboard over `http.server`.
   windows (`maintenance_windows`) during which it is not checked at
   all — no alert fires, no flap state changes, and uptime is
   untouched. The dashboard shows MAINTENANCE and lists the windows.
-- Uptime % over the last 24 hours and the last 7 days, so a recent
-  outage shows up even when the all-time figure still looks fine.
+- Uptime % over the last 24 hours, 7 days, and 30 days, plus total
+  downtime in each window, so a recent outage shows up even when
+  the all-time figure still looks fine. `GET /api/uptime` returns
+  the same summary per endpoint as JSON, with the endpoint's
+  `sla_target` compared against the 30-day figure; `GET
+  /api/status` carries the 30-day uptime and the downtime per
+  window too.
 - Down since: when an endpoint is DOWN the dashboard shows how long
   the outage has lasted ("12m 34s"), from the first failed check in
   the current run of failures — unconfirmed failures below the flap
@@ -1123,9 +1128,37 @@ make test   # python3 -m unittest discover -s tests -v
   and the JSON export can never disagree. All 7 buckets are
   always present, even at 0, so an endpoint with no incidents
   gets all zeroes instead of an omitted field — done in 0.45.0.
+- [x] Uptime / SLA summary view: `GET /api/uptime` returns per
+  endpoint the uptime % and total downtime over the last 24 hours,
+  7 days, and 30 days (from `History.window_summary`, built on the
+  same incident grouping the incident lists use — an outage that
+  started before a window only counts the part inside it, and an
+  ongoing outage accrues to the request time), with the endpoint's
+  `sla_target` compared against the 30-day figure (`sla_met_30d`,
+  `sla_shortfall_30d_pct`); `GET /api/status` gains
+  `uptime_30d_pct` and `downtime_24h_seconds` /
+  `downtime_7d_seconds` / `downtime_30d_seconds` per endpoint, and
+  a remote status-page source reports its 30-day figure too —
+  done in 0.46.0.
 
 ## Changelog
 
+- **0.46.0** — Uptime / SLA summary view: a new `GET /api/uptime`
+  endpoint returns per endpoint the uptime % and total downtime
+  over the last 24 hours, 7 days, and 30 days, plus the
+  endpoint's `sla_target` compared against the 30-day figure
+  (`sla_met_30d`, `sla_shortfall_30d_pct`). The figures come from
+  `History.window_summary`, built on the same incident grouping
+  the incident lists use, so an outage that started before a
+  window only counts the part inside it, an ongoing outage
+  accrues downtime to the request time, and an endpoint with no
+  counted checks in a window reports uptime `null` with the
+  downtime still counted. `GET /api/status` gains
+  `uptime_30d_pct` and `downtime_24h_seconds` /
+  `downtime_7d_seconds` / `downtime_30d_seconds` per endpoint
+  (its window figures now also honour the snapshot's `now`,
+  like the latency percentiles already did), and a remote
+  status-page source reports its 30-day figure too.
 - **0.45.0** — Per-incident duration histogram in the incidents
   API: `GET /api/incidents` gains `duration_histogram` per
   endpoint — the same 7 log-spaced buckets (`< 1m`, `1m – 5m`,

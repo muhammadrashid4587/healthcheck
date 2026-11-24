@@ -299,6 +299,74 @@ class History:
         up = sum(1 for c in window if c["ok"])
         return round(100.0 * up / len(window), 1)
 
+    def downtime_seconds_window(self, name, seconds, now=None):
+        """Total outage time (seconds) for an endpoint over the last
+        `seconds`, or 0.0 when it was never down in the window.
+
+        The same incident grouping `recent_incidents` uses:
+        consecutive confirmed-down checks form one incident, from
+        the first down check to the first passing check after it.
+        Each incident is clipped to the window, so an outage that
+        started before the window only counts the part inside it;
+        an incident still open at the end of the recorded history
+        accrues downtime to `now` (the current time when not
+        given), capped at the window end. Skips, unconfirmed
+        failures, and maintenance rounds are not outages and
+        neither start nor end one, so they contribute nothing.
+        """
+        ref = time.time() if now is None else now
+        cutoff = ref - seconds
+        total = 0.0
+        for incident in self._group_incidents(name, now=ref):
+            end = (incident["end"] if incident["end"] is not None
+                   else ref)
+            overlap_start = max(incident["start"], cutoff)
+            overlap_end = min(end, ref)
+            if overlap_end > overlap_start:
+                total += overlap_end - overlap_start
+        return round(total, 1)
+
+    def window_summary(self, name, seconds, now=None):
+        """Uptime %, downtime, and counted checks for one endpoint
+        over the last `seconds`.
+
+        Returns {"uptime_pct", "downtime_seconds", "checks"} where
+        `uptime_pct` is None when the window holds no counted
+        checks (no data is not downtime), `downtime_seconds` is
+        the outage time inside the window from
+        `downtime_seconds_window`, and `checks` is how many
+        counted checks the figure is based on. The same exclusion
+        rules as `uptime_pct_window` apply: skipped checks,
+        unconfirmed failures, and maintenance rounds count
+        neither for nor against uptime.
+        """
+        ref = time.time() if now is None else now
+        cutoff = ref - seconds
+        checks = self._checks.get(name)
+        # Downtime is incident time clipped to the window, so an
+        # outage that started before the window and is still open
+        # accrues the whole window even when no counted check falls
+        # inside it — it must not report 0.0 while the endpoint
+        # has been down throughout.
+        downtime = self.downtime_seconds_window(name, seconds, now=ref)
+        if not checks:
+            return {"uptime_pct": None, "downtime_seconds": downtime,
+                    "checks": 0}
+        window = [c for c in checks
+                  if c["checked_at"] >= cutoff
+                  and not c.get("skipped", False)
+                  and not c.get("unconfirmed", False)
+                  and not c.get("maintenance", False)]
+        if not window:
+            return {"uptime_pct": None, "downtime_seconds": downtime,
+                    "checks": 0}
+        up = sum(1 for c in window if c["ok"])
+        return {
+            "uptime_pct": round(100.0 * up / len(window), 1),
+            "downtime_seconds": downtime,
+            "checks": len(window),
+        }
+
     def check_counts(self, name):
         """Total checks that ran per endpoint, by result.
 

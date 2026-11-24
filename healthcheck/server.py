@@ -10,7 +10,10 @@ scripts and other tools that want to consume the live status without
 scraping the HTML. GET /api/sla returns the monthly SLA report as
 JSON — the same payload as `--sla-report --sla-format json`, for
 the current month unless `?month=YYYY-MM` names another. GET
-/api/incidents returns the recent incidents per endpoint as JSON
+/api/uptime returns the rolling-window uptime summary as JSON:
+per endpoint, uptime % and total downtime over the last 24 hours,
+7 days, and 30 days, with the SLA target compared against the
+30-day figure. GET /api/incidents returns the recent incidents
 — the same grouping as the dashboard, `GET /api/status`, and the
 static status page — plus each endpoint's duration histogram over
 those same incidents (the 7 log-spaced buckets from
@@ -93,8 +96,8 @@ def status_snapshot(history, endpoints, now=None,
     """Machine-readable status for every endpoint: the same data the
     dashboard renders, as plain JSON-friendly values.
 
-    `now` pins the 24-hour windows (uptime 24h/7d and latency
-    percentiles); it defaults to the current time. Returns
+    `now` pins the windows (uptime 24h/7d/30d, downtime 24h/7d/30d,
+    and latency percentiles); it defaults to the current time. Returns
     {"generated_at": <epoch seconds>, "endpoints": [...]} where
     each endpoint dict has "name", "status" (UP / DOWN / SKIPPED /
     MAINTENANCE / UNKNOWN — same rules as the dashboard, including
@@ -105,8 +108,14 @@ def status_snapshot(history, endpoints, now=None,
     accepts any 2xx/3xx), "status_code" (the most recent actual
     HTTP status, or None when the endpoint never returned one),
     "uptime_pct",
-    "uptime_24h_pct", "uptime_7d_pct" (None when there is no data in
-    that window — no data is not downtime), "latency_ms" (most recent
+    "uptime_24h_pct", "uptime_7d_pct", "uptime_30d_pct" (None when
+    there is no data in that window — no data is not downtime),
+    "downtime_24h_seconds", "downtime_7d_seconds",
+    "downtime_30d_seconds" (total outage time in seconds inside
+    each window, from the same incident grouping the incident
+    lists use — an outage that started before the window only
+    counts the part inside it, and an ongoing outage accrues to
+    `now`), "latency_ms" (most recent
     recorded latency, or None), "max_latency_ms" (the latency budget
     in ms the endpoint must answer within, or None when it has none
     — a check slower than the budget is DOWN, like any other failed
@@ -228,8 +237,18 @@ def status_snapshot(history, endpoints, now=None,
                 expires_at, warn_days, now=ref),
             "cert_expiry_alerted_at": cert_alerted_at,
             "uptime_pct": history.uptime_pct(name),
-            "uptime_24h_pct": history.uptime_pct_window(name, 24 * 3600),
-            "uptime_7d_pct": history.uptime_pct_window(name, 7 * 24 * 3600),
+            "uptime_24h_pct": history.uptime_pct_window(
+                name, 24 * 3600, now=ref),
+            "uptime_7d_pct": history.uptime_pct_window(
+                name, 7 * 24 * 3600, now=ref),
+            "uptime_30d_pct": history.uptime_pct_window(
+                name, 30 * 24 * 3600, now=ref),
+            "downtime_24h_seconds": history.downtime_seconds_window(
+                name, 24 * 3600, now=ref),
+            "downtime_7d_seconds": history.downtime_seconds_window(
+                name, 7 * 24 * 3600, now=ref),
+            "downtime_30d_seconds": history.downtime_seconds_window(
+                name, 30 * 24 * 3600, now=ref),
             "latency_ms": latency,
             "max_latency_ms": ep.get("max_latency_ms"),
             "latency_percentiles": history.latency_percentiles(name, now=now),
@@ -278,6 +297,59 @@ def sla_snapshot(history, endpoints, year=None, month=None):
         year, month = now.tm_year, now.tm_mon
     report = sla_report(history, endpoints, year, month)
     return sla_report_payload(report, year, month)
+
+
+# Rolling windows the uptime summary reports, in order: label and
+# seconds. The 30-day window is the longest the bounded history
+# can still cover for a monitor checking every minute or slower.
+UPTIME_WINDOWS = (("24h", 24 * 3600), ("7d", 7 * 24 * 3600),
+                  ("30d", 30 * 24 * 3600))
+
+
+def uptime_snapshot(history, endpoints, now=None):
+    """Rolling-window uptime summary per endpoint, as a JSON-ready
+    dict: the same figures `GET /api/status` carries, gathered in
+    one place.
+
+    Returns {"generated_at": <epoch seconds>, "windows": ["24h",
+    "7d", "30d"], "endpoints": [...]} where each endpoint row has
+    "name", "sla_target" (the configured target, or None), and
+    "windows" — one {"uptime_pct", "downtime_seconds", "checks"}
+    per window from `History.window_summary`, so the uptime %,
+    the total outage time, and the check count in a window can
+    never disagree with each other. The SLA target is compared
+    against the 30-day window: "sla_met_30d" is True / False, or
+    None when there is no target or no 30-day data, and
+    "sla_shortfall_30d_pct" is the target minus the 30-day uptime
+    when the endpoint fell short, else None. `now` pins the
+    windows; it defaults to the current time.
+    """
+    ref = time.time() if now is None else now
+    out = []
+    for ep in endpoints:
+        name = ep["name"]
+        target = ep.get("sla_target")
+        windows = {
+            label: history.window_summary(name, seconds, now=ref)
+            for label, seconds in UPTIME_WINDOWS
+        }
+        pct_30d = windows["30d"]["uptime_pct"]
+        if target is None or pct_30d is None:
+            met, shortfall = None, None
+        elif pct_30d >= target:
+            met, shortfall = True, None
+        else:
+            met, shortfall = False, round(target - pct_30d, 1)
+        out.append({
+            "name": name,
+            "sla_target": target,
+            "windows": windows,
+            "sla_met_30d": met,
+            "sla_shortfall_30d_pct": shortfall,
+        })
+    return {"generated_at": ref,
+            "windows": [label for label, _ in UPTIME_WINDOWS],
+            "endpoints": out}
 
 
 def incidents_snapshot(history, endpoints, limit=5, name=None, now=None):
@@ -744,6 +816,16 @@ def make_handler(history, endpoints, status_page_sources=None,
                         return
                 payload = json.dumps(
                     sla_snapshot(history, endpoints, year, month)
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+            if parsed.path == "/api/uptime":
+                payload = json.dumps(
+                    uptime_snapshot(history, endpoints)
                 ).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
