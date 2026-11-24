@@ -141,8 +141,10 @@ endpoint, and serves a small status dashboard over `http.server`.
   dependency, maintenance windows per endpoint), so scripts and other tools can consume the live status
   without scraping the HTML. `GET /api/incidents` returns just the
   recent incidents per endpoint (newest first, at most 5, an ongoing
-  incident's duration running to now) — `?endpoint=NAME` filters to
-  one endpoint and `?limit=N` caps the incidents per endpoint.
+  incident's duration running to now), each endpoint's row also
+  carrying its per-incident duration histogram over those same
+  incidents — `?endpoint=NAME` filters to one endpoint and
+  `?limit=N` caps the incidents per endpoint.
 - SLA reporting: an endpoint can declare an `sla_target` (e.g.
   99.9); `python3 -m healthcheck.cli --config config.json
   --sla-report 2026-11` prints that calendar month's uptime per
@@ -1112,9 +1114,31 @@ make test   # python3 -m unittest discover -s tests -v
   JSON export can never disagree. All 7 buckets are always
   present, even at 0, so an endpoint with no incidents gets
   all zeroes instead of an omitted field — done in 0.44.0.
+- [x] Duration histogram in the incidents API: `GET /api/incidents`
+  gains `duration_histogram` per endpoint — the same 7
+  log-spaced buckets the `--incidents` text report prints,
+  from `History.incident_duration_histogram()` with the same
+  `limit` as the `incidents` listed, so the API, the dashboard,
+  the static status page, `GET /api/status`, the text report,
+  and the JSON export can never disagree. All 7 buckets are
+  always present, even at 0, so an endpoint with no incidents
+  gets all zeroes instead of an omitted field — done in 0.45.0.
 
 ## Changelog
 
+- **0.45.0** — Per-incident duration histogram in the incidents
+  API: `GET /api/incidents` gains `duration_histogram` per
+  endpoint — the same 7 log-spaced buckets (`< 1m`, `1m – 5m`,
+  `5m – 15m`, `15m – 1h`, `1h – 6h`, `6h – 24h`, `> 24h`) the
+  `--incidents` text report prints, from
+  `History.incident_duration_histogram()` with the same `limit`
+  as the `incidents` listed alongside it (so a `?limit=1`
+  response's histogram covers only that one incident), so the
+  histogram can never disagree with the incidents above it.
+  An ongoing incident's duration runs to the request time in
+  both, and all 7 buckets are always present even at 0 — an
+  endpoint with no incidents gets all zeroes, not an omitted
+  field.
 - **0.44.0** — Per-incident duration histogram in the JSON
   API: `GET /api/status` gains `duration_histogram` per
   endpoint — the same 7 log-spaced buckets (`< 1m`, `1m – 5m`,

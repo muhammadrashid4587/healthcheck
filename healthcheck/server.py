@@ -12,9 +12,12 @@ JSON — the same payload as `--sla-report --sla-format json`, for
 the current month unless `?month=YYYY-MM` names another. GET
 /api/incidents returns the recent incidents per endpoint as JSON
 — the same grouping as the dashboard, `GET /api/status`, and the
-static status page — with `?endpoint=NAME` to filter to one
-endpoint and `?limit=N` to cap the incidents per endpoint (5 by
-default). GET /metrics returns the same data in Prometheus
+static status page — plus each endpoint's duration histogram over
+those same incidents (the 7 log-spaced buckets from
+`History.incident_duration_histogram()`, with the same limit, so
+the histogram can never disagree with the incidents listed) — with
+`?endpoint=NAME` to filter to one endpoint and `?limit=N` to cap
+the incidents per endpoint (5 by default). GET /metrics returns the same data in Prometheus
 text format, so a Prometheus server can scrape it. A check skipped
 because its dependency is not UP renders as SKIPPED, with the
 dependency named in the Depends on column; an endpoint inside a
@@ -284,15 +287,22 @@ def incidents_snapshot(history, endpoints, limit=5, name=None, now=None):
     reports the same incidents.
 
     Returns {"generated_at": <epoch seconds>, "endpoints": [...]}
-    where each endpoint row has "name" and "incidents" — the
+    where each endpoint row has "name", "incidents" — the
     endpoint's recent outages, newest first (at most `limit` per
     endpoint, 5 by default), each {"start", "end", "checks",
     "ongoing", "duration_s"}; an ongoing incident has "end"
     None and its duration runs to `now` (the current time when
-    not given). With `name` given only that endpoint is listed;
-    an unknown name raises ValueError. Endpoints with no
-    incidents are listed with an empty list, so a consumer can
-    always find every configured endpoint.
+    not given) — and "duration_histogram", those same incidents
+    bucketed by duration into the 7 log-spaced buckets the
+    `--incidents` text report prints, from
+    `History.incident_duration_histogram()` with the same
+    `limit`, so the histogram can never disagree with the
+    incidents listed above it. All 7 buckets are always present
+    even at 0, so an endpoint with no incidents gets all zeroes
+    instead of an omitted field. With `name` given only that
+    endpoint is listed; an unknown name raises ValueError.
+    Endpoints with no incidents are listed with an empty list,
+    so a consumer can always find every configured endpoint.
     """
     known = {ep["name"] for ep in endpoints}
     if name is not None and name not in known:
@@ -305,6 +315,8 @@ def incidents_snapshot(history, endpoints, limit=5, name=None, now=None):
         out.append({
             "name": ep["name"],
             "incidents": history.recent_incidents(
+                ep["name"], limit=limit, now=ref),
+            "duration_histogram": history.incident_duration_histogram(
                 ep["name"], limit=limit, now=ref),
         })
     return {"generated_at": ref, "endpoints": out}

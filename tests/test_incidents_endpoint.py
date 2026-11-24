@@ -92,6 +92,40 @@ class IncidentsSnapshotTests(unittest.TestCase):
         # The one kept is the newest: the ongoing incident.
         self.assertIs(api["incidents"][0]["ongoing"], True)
 
+    def test_snapshot_histogram_covers_the_listed_incidents(self):
+        snap = incidents_snapshot(self.history, self.endpoints,
+                                  now=self.now)
+        api, db, quiet = snap["endpoints"]
+        # api: the closed 60s incident lands in "1m – 5m", the
+        # ongoing 1200s one in "15m – 1h".
+        counts = {b["label"]: b["count"]
+                  for b in api["duration_histogram"]}
+        self.assertEqual(len(api["duration_histogram"]), 7)
+        self.assertEqual(counts["< 1m"], 0)
+        self.assertEqual(counts["1m – 5m"], 1)
+        self.assertEqual(counts["15m – 1h"], 1)
+        # db: one 120s incident, so "1m – 5m" holds 1.
+        db_counts = {b["label"]: b["count"]
+                     for b in db["duration_histogram"]}
+        self.assertEqual(db_counts["1m – 5m"], 1)
+        self.assertEqual(sum(db_counts.values()), 1)
+        # An endpoint with no incidents gets all 7 buckets at 0,
+        # not an omitted field.
+        self.assertEqual(
+            [b["count"] for b in quiet["duration_histogram"]],
+            [0] * 7)
+
+    def test_snapshot_histogram_uses_the_same_limit(self):
+        # limit=1 keeps only the newest incident, so the histogram
+        # covers that one incident alone — not the full history.
+        snap = incidents_snapshot(self.history, self.endpoints,
+                                  limit=1, now=self.now)
+        counts = {b["label"]: b["count"]
+                  for b in snap["endpoints"][0]["duration_histogram"]}
+        self.assertEqual(sum(counts.values()), 1)
+        self.assertEqual(counts["15m – 1h"], 1)
+        self.assertEqual(counts["1m – 5m"], 0)
+
     def test_snapshot_unknown_endpoint_raises(self):
         with self.assertRaises(ValueError):
             incidents_snapshot(self.history, self.endpoints,
@@ -156,6 +190,28 @@ class IncidentsApiTests(unittest.TestCase):
         self.assertEqual(len(payload["endpoints"][0]["incidents"]), 1)
         self.assertIs(payload["endpoints"][0]["incidents"][0]["ongoing"],
                       True)
+
+    def test_incidents_histogram_served_over_http(self):
+        _, _, body = self._get("/api/incidents")
+        payload = json.loads(body)
+        api = payload["endpoints"][0]
+        # The same 7 log-spaced buckets, each with label, bounds,
+        # and count; the closed 60s incident is in "1m – 5m" and
+        # the ongoing one (duration running to the request time)
+        # is in "15m – 1h" or later — never in the short buckets.
+        histogram = api["duration_histogram"]
+        self.assertEqual(len(histogram), 7)
+        buckets = {b["label"]: b for b in histogram}
+        self.assertEqual(buckets["1m – 5m"]["count"], 1)
+        self.assertEqual(buckets["1m – 5m"]["min_s"], 60)
+        self.assertEqual(buckets["1m – 5m"]["max_s"], 300)
+        self.assertEqual(buckets["< 1m"]["count"], 0)
+        self.assertEqual(sum(b["count"] for b in histogram), 2)
+        # An endpoint with no incidents gets all zeroes.
+        self.assertEqual(
+            [b["count"] for b in payload["endpoints"][1]
+             ["duration_histogram"]],
+            [0] * 7)
 
     def test_bad_endpoint_is_a_400_with_a_json_error(self):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
