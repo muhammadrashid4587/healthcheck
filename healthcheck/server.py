@@ -9,7 +9,12 @@ status page use. GET /api/status returns the same data as JSON, for
 scripts and other tools that want to consume the live status without
 scraping the HTML. GET /api/sla returns the monthly SLA report as
 JSON — the same payload as `--sla-report --sla-format json`, for
-the current month unless `?month=YYYY-MM` names another. GET /metrics returns the same data in Prometheus
+the current month unless `?month=YYYY-MM` names another. GET
+/api/incidents returns the recent incidents per endpoint as JSON
+— the same grouping as the dashboard, `GET /api/status`, and the
+static status page — with `?endpoint=NAME` to filter to one
+endpoint and `?limit=N` to cap the incidents per endpoint (5 by
+default). GET /metrics returns the same data in Prometheus
 text format, so a Prometheus server can scrape it. A check skipped
 because its dependency is not UP renders as SKIPPED, with the
 dependency named in the Depends on column; an endpoint inside a
@@ -229,6 +234,39 @@ def sla_snapshot(history, endpoints, year=None, month=None):
         year, month = now.tm_year, now.tm_mon
     report = sla_report(history, endpoints, year, month)
     return sla_report_payload(report, year, month)
+
+
+def incidents_snapshot(history, endpoints, limit=5, name=None, now=None):
+    """Recent incidents per endpoint as a JSON-ready dict, built
+    from the same `History.recent_incidents()` the dashboard, the
+    status API, and the static status page use, so every surface
+    reports the same incidents.
+
+    Returns {"generated_at": <epoch seconds>, "endpoints": [...]}
+    where each endpoint row has "name" and "incidents" — the
+    endpoint's recent outages, newest first (at most `limit` per
+    endpoint, 5 by default), each {"start", "end", "checks",
+    "ongoing", "duration_s"}; an ongoing incident has "end"
+    None and its duration runs to `now` (the current time when
+    not given). With `name` given only that endpoint is listed;
+    an unknown name raises ValueError. Endpoints with no
+    incidents are listed with an empty list, so a consumer can
+    always find every configured endpoint.
+    """
+    known = {ep["name"] for ep in endpoints}
+    if name is not None and name not in known:
+        raise ValueError(f"unknown endpoint: {name}")
+    selected = ([ep for ep in endpoints if ep["name"] == name]
+                if name is not None else endpoints)
+    ref = time.time() if now is None else now
+    out = []
+    for ep in selected:
+        out.append({
+            "name": ep["name"],
+            "incidents": history.recent_incidents(
+                ep["name"], limit=limit, now=ref),
+        })
+    return {"generated_at": ref, "endpoints": out}
 
 
 def _prom_label(value):
@@ -570,6 +608,53 @@ def make_handler(history, endpoints, status_page_sources=None,
                 payload = json.dumps(
                     sla_snapshot(history, endpoints, year, month)
                 ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+            if parsed.path == "/api/incidents":
+                # ?endpoint=NAME filters to one endpoint and
+                # ?limit=N caps the incidents per endpoint (5 by
+                # default). A bad endpoint or limit is a 400, not
+                # a 404: the path is right, the input is not.
+                query = parse_qs(parsed.query)
+                name = query.get("endpoint", [None])[0]
+                limit_param = query.get("limit", [None])[0]
+                if limit_param is None:
+                    limit = 5
+                else:
+                    try:
+                        limit = int(limit_param)
+                        if limit < 1:
+                            raise ValueError(
+                                "limit must be at least 1")
+                    except ValueError:
+                        error = json.dumps(
+                            {"error": f"invalid limit {limit_param!r}: "
+                             "must be a positive integer"}).encode("utf-8")
+                        self.send_response(400)
+                        self.send_header("Content-Type",
+                                         "application/json")
+                        self.send_header("Content-Length",
+                                         str(len(error)))
+                        self.end_headers()
+                        self.wfile.write(error)
+                        return
+                try:
+                    snapshot = incidents_snapshot(
+                        history, endpoints, limit=limit, name=name)
+                except ValueError as exc:
+                    error = json.dumps(
+                        {"error": str(exc)}).encode("utf-8")
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(error)))
+                    self.end_headers()
+                    self.wfile.write(error)
+                    return
+                payload = json.dumps(snapshot).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))

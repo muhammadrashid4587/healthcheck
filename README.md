@@ -122,7 +122,10 @@ endpoint, and serves a small status dashboard over `http.server`.
   same data as JSON (status, uptime all-time / 24h / 7d, latency,
   last check, recent incidents, dependency, maintenance windows per
   endpoint), so scripts and other tools can consume the live status
-  without scraping the HTML.
+  without scraping the HTML. `GET /api/incidents` returns just the
+  recent incidents per endpoint (newest first, at most 5, an ongoing
+  incident's duration running to now) — `?endpoint=NAME` filters to
+  one endpoint and `?limit=N` caps the incidents per endpoint.
 - SLA reporting: an endpoint can declare an `sla_target` (e.g.
   99.9); `python3 -m healthcheck.cli --config config.json
   --sla-report 2026-11` prints that calendar month's uptime per
@@ -875,8 +878,33 @@ make test   # python3 -m unittest discover -s tests -v
   no subsection, and with no incidents anywhere the section is
   omitted, so a quiet monitor's dashboard is unchanged — done
   in 0.34.0.
+- [x] Recent incidents over HTTP (`GET /api/incidents` on the
+  dashboard server): the same recent incidents per endpoint as
+  JSON — newest first, at most 5 per endpoint, each `{"start",
+  "end", "checks", "ongoing", "duration_s"}`, an ongoing
+  incident's duration running to the request time — so a script
+  can poll outage history without pulling the whole status
+  snapshot. `?endpoint=NAME` filters to one endpoint and
+  `?limit=N` caps the incidents per endpoint; an unknown
+  endpoint or a bad limit is a 400 with a JSON error. It reuses
+  `History.recent_incidents()`, so the endpoint, the dashboard,
+  `GET /api/status`, and the static status page can never
+  disagree — done in 0.35.0.
 
 ## Changelog
+
+- **0.35.0** — Recent incidents over HTTP: `GET /api/incidents`
+  serves the recent incidents per endpoint as JSON — newest
+  first, at most 5 per endpoint, each `{"start", "end", "checks",
+  "ongoing", "duration_s"}`, an ongoing incident's duration
+  running to the request time — so a script can poll outage
+  history without pulling the whole status snapshot.
+  `?endpoint=NAME` filters to one endpoint and `?limit=N` caps
+  the incidents per endpoint; an unknown endpoint or a bad limit
+  is a 400 with a JSON error. It reuses
+  `History.recent_incidents()`, so the endpoint, the dashboard,
+  `GET /api/status`, and the static status page can never
+  disagree.
 
 - **0.34.0** — Recent incidents on the live dashboard: `GET /`
   gains a "Recent incidents" section below the endpoint table —
