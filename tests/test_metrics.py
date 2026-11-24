@@ -6,7 +6,7 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 
 from healthcheck.checker import CheckResult
-from healthcheck.server import make_handler, render_metrics
+from healthcheck.server import make_handler, render_metrics, uptime_snapshot
 from healthcheck.store import History
 
 
@@ -85,6 +85,39 @@ class MetricsTests(unittest.TestCase):
             m[("healthcheck_uptime_ratio_24h", (("name", "web"),))], "1.0")
         self.assertEqual(
             m[("healthcheck_uptime_ratio_7d", (("name", "db"),))], "0.0")
+        self.assertEqual(
+            m[("healthcheck_uptime_ratio_30d", (("name", "web"),))], "1.0")
+        self.assertEqual(
+            m[("healthcheck_uptime_ratio_30d", (("name", "db"),))], "0.0")
+
+    def test_uptime_ratio_30d_covers_checks_older_than_7d(self):
+        # A check 10 days ago is outside the 24h/7d windows but
+        # inside the 30-day one, so only the 30d gauge reports it.
+        hist = History()
+        hist.record(_result("web", True, at=1_700_000_000.0 - 10 * 86400))
+        m = _metrics(render_metrics(hist, self.endpoints[:1],
+                                    now=1_700_000_000.0))
+        self.assertNotIn(
+            ("healthcheck_uptime_ratio_24h", (("name", "web"),)), m)
+        self.assertNotIn(
+            ("healthcheck_uptime_ratio_7d", (("name", "web"),)), m)
+        self.assertEqual(
+            m[("healthcheck_uptime_ratio_30d", (("name", "web"),))], "1.0")
+
+    def test_uptime_ratio_30d_agrees_with_uptime_snapshot(self):
+        # The gauge reads the same uptime_pct_window figure GET
+        # /api/uptime reports as uptime_30d_pct, so the two can
+        # never disagree.
+        snap = uptime_snapshot(self.history, self.endpoints,
+                               now=1_700_000_000.0)
+        m = _metrics(render_metrics(self.history, self.endpoints,
+                                    now=1_700_000_000.0))
+        for row in snap["endpoints"]:
+            pct = row["windows"]["30d"]["uptime_pct"]
+            self.assertEqual(
+                m[("healthcheck_uptime_ratio_30d",
+                   (("name", row["name"]),))],
+                str(pct / 100.0))
 
     def test_uptime_ratio_omitted_without_data(self):
         text = render_metrics(self.history, self.endpoints + [
@@ -95,6 +128,10 @@ class MetricsTests(unittest.TestCase):
             ("healthcheck_uptime_ratio", (("name", "fresh"),)), m)
         self.assertNotIn(
             ("healthcheck_uptime_ratio_24h", (("name", "fresh"),)), m)
+        self.assertNotIn(
+            ("healthcheck_uptime_ratio_7d", (("name", "fresh"),)), m)
+        self.assertNotIn(
+            ("healthcheck_uptime_ratio_30d", (("name", "fresh"),)), m)
 
     def test_latency_summary_quantiles_sum_and_count(self):
         hist = History()

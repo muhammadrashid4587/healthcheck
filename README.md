@@ -658,8 +658,10 @@ the endpoint has been down — 0 when up, counted from the first
 failed check in the current run, unconfirmed ones included;
 omitted for a never-checked, SKIPPED, or maintenance endpoint),
 `healthcheck_uptime_ratio` (gauge, share of
-checks that were up, all-time) plus `healthcheck_uptime_ratio_24h`
-and `healthcheck_uptime_ratio_7d`, `healthcheck_cert_expiry_days`
+checks that were up, all-time) plus `healthcheck_uptime_ratio_24h`,
+`healthcheck_uptime_ratio_7d`, and `healthcheck_uptime_ratio_30d`
+(the 30-day figure is the same one `GET /api/uptime` reports as
+`uptime_30d_pct`, so the gauge and the API can never disagree),
 (gauge, whole days until the endpoint's TLS certificate expires —
 negative when expired, omitted when no expiry was recorded),
 `healthcheck_latency_ms` (summary
@@ -1167,9 +1169,24 @@ make test   # python3 -m unittest discover -s tests -v
   disagree with the API or the text export. A window with no
   counted checks shows `-`, like the 24h/7d columns — done in
   0.48.0.
+- [x] 30-day uptime ratio gauge in `GET /metrics`:
+  `healthcheck_uptime_ratio_30d` joins the all-time, 24h, and 7d
+  uptime-ratio gauges, so a slow degradation over the last month
+  is visible to Prometheus scrapers next to the shorter windows.
+  It reads the same `uptime_pct_window` figure `GET /api/uptime`
+  reports as `uptime_30d_pct`, so the gauge and the API can never
+  disagree, and a check 10 days old shows up in the 30d gauge
+  while the 24h/7d gauges omit it. A window with no counted
+  checks has no series, like the 24h/7d gauges — done in 0.49.0.
 
 ## Changelog
 
+- **0.49.0** — 30-day uptime ratio gauge in `GET /metrics`:
+  `healthcheck_uptime_ratio_30d` joins the all-time, 24h, and 7d
+  uptime-ratio gauges, reading the same `uptime_pct_window`
+  figure `GET /api/uptime` reports as `uptime_30d_pct`, so the
+  gauge and the API can never disagree. A window with no counted
+  checks has no series, like the 24h/7d gauges.
 - **0.48.0** — 30-day uptime column on the dashboard and the
   static status page: the live dashboard gains a Uptime 30d
   column next to Uptime 24h / 7d, and the static status page

@@ -465,9 +465,13 @@ def render_metrics(history, endpoints, now=None):
       checked, is currently SKIPPED, or is in maintenance has no
       current reading, so it is omitted — no data is not a 0.
     - ``healthcheck_uptime_ratio`` (gauge): share of checks that
-      were up, all-time, plus ``_24h`` and ``_7d`` variants over
-      the last 24 hours / 7 days. Omitted when there is no counted
-      data in that window — no data is not downtime.
+      were up, all-time, plus ``_24h``, ``_7d``, and ``_30d``
+      variants over the last 24 hours / 7 days / 30 days. Omitted
+      when there is no counted data in that window — no data is
+      not downtime. The ``_30d`` variant reads the same
+      ``uptime_pct_window`` figure `GET /api/uptime` reports as
+      ``uptime_30d_pct``, so the gauge and the API can never
+      disagree.
     - ``healthcheck_latency_ms`` (summary): nearest-rank p50/p95/p99
       in ms over the last 24 hours, plus ``_sum`` and ``_count``.
       Skipped and maintenance checks never ran and are excluded;
@@ -537,7 +541,8 @@ def render_metrics(history, endpoints, now=None):
             lines.append(
                 f'healthcheck_uptime_ratio{{name="{_prom_label(ep["name"])}"}} '
                 f"{pct / 100.0}")
-    for window, suffix in ((24 * 3600, "24h"), (7 * 24 * 3600, "7d")):
+    for window, suffix in ((24 * 3600, "24h"), (7 * 24 * 3600, "7d"),
+                           (30 * 24 * 3600, "30d")):
         lines.append(f"# HELP healthcheck_uptime_ratio_{suffix} Share of "
                      f"checks that were up over the last {suffix}.")
         lines.append(f"# TYPE healthcheck_uptime_ratio_{suffix} gauge")
