@@ -33,8 +33,9 @@ from .maintenance import (active_window, summarize_window,
                           validate_maintenance_windows)
 from .remote import fetch_remote_status
 from .server import serve
-from .sla import (parse_month, render_sla_report, sla_report,
-                  validate_sla_targets)
+from .sla import (breaches, monthly_detail, monthly_uptime, parse_month,
+                  render_sla_report, render_sla_report_csv,
+                  render_sla_report_json, sla_report, validate_sla_targets)
 from .statuspage import write_status_page
 from .store import History
 
@@ -1281,9 +1282,21 @@ def main(argv=None):
                              "endpoint vs its sla_target, with breaches) "
                              "for the given month and exit; with no month "
                              "given, the current month is used")
+    parser.add_argument("--sla-format", default="text",
+                        choices=["text", "csv", "json"],
+                        help="format for --sla-report: plain text "
+                             "(default), CSV, or JSON — the CSV and JSON "
+                             "exports add per-endpoint incident counts, "
+                             "downtime, and latency percentiles over the "
+                             "month")
+    parser.add_argument("--sla-out", default=None, metavar="PATH",
+                        help="write the --sla-report output to PATH "
+                             "instead of printing it")
     args = parser.parse_args(argv)
     if args.status_page_source and not args.status_page:
         parser.error("--status-page-source needs --status-page")
+    if (args.sla_format != "text" or args.sla_out) and not args.sla_report:
+        parser.error("--sla-format and --sla-out need --sla-report")
     cfg = load_config(args.config)
     try:
         apply_expect_status_overrides(cfg, args)
@@ -1304,7 +1317,17 @@ def main(argv=None):
         path = history_path(cfg, args)
         history = load_history(path, maxlen=cfg.get("history", 100))
         report = sla_report(history, cfg.get("endpoints", []), year, month)
-        print(render_sla_report(report, year, month), end="")
+        if args.sla_format == "csv":
+            output = render_sla_report_csv(report, year, month)
+        elif args.sla_format == "json":
+            output = render_sla_report_json(report, year, month)
+        else:
+            output = render_sla_report(report, year, month)
+        if args.sla_out:
+            with open(args.sla_out, "w", encoding="utf-8") as fh:
+                fh.write(output)
+        else:
+            print(output, end="")
         return 0
     if args.check is not None:
         name = None if args.check == "__all__" else args.check

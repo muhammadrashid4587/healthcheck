@@ -13,11 +13,18 @@ uptime. A month with no counted checks for an endpoint reports
 
 The month is a calendar month in the monitor's local time. The
 report is plain text, printed by `--sla-report`, so it can be
-pasted into a status update or piped to a file.
+pasted into a status update or piped to a file; `--sla-format
+csv` / `json` exports the same rows (plus per-endpoint incident
+counts, downtime, and latency percentiles over the month) as
+CSV or JSON, for spreadsheets and scripts.
 """
 
 from __future__ import annotations
 
+import csv
+import io
+import json
+import math
 import time
 
 
@@ -63,6 +70,72 @@ def monthly_uptime(history, name, year, month):
     return round(100.0 * up / len(window), 1), len(window)
 
 
+def monthly_detail(history, name, year, month):
+    """Incident, downtime, and latency detail for one endpoint
+    over one calendar month.
+
+    Returns {"incidents", "failed_checks", "downtime_seconds",
+    "latency"} where `incidents` is how many confirmed outages
+    overlapped the month, `failed_checks` is how many counted
+    checks failed in it, `downtime_seconds` is the outage time
+    inside the month (first down check to the first passing check
+    after it, clipped to the month — an incident still open at
+    the month's end accrues downtime to the month end), and
+    `latency` is nearest-rank p50/p95/p99 in ms over the checks
+    that ran in the month, or None when none ran. Incident
+    grouping follows the status page: consecutive confirmed-down
+    checks are one incident, and skips, unconfirmed failures,
+    and maintenance rounds neither start nor end one.
+    """
+    start, end = month_bounds(year, month)
+    entries = history.recent(name, history.maxlen)
+    window = [c for c in entries
+              if start <= c["checked_at"] < end and _counted(c)]
+    failed = sum(1 for c in window if not c["ok"])
+
+    latencies = sorted(
+        c["latency_ms"] for c in entries
+        if start <= c["checked_at"] < end
+        and not c.get("skipped", False)
+        and not c.get("maintenance", False))
+    latency = None
+    if latencies:
+        n = len(latencies)
+
+        def percentile(p):
+            rank = max(1, math.ceil(p / 100.0 * n))
+            return round(latencies[min(rank, n) - 1], 1)
+
+        latency = {"p50": percentile(50), "p95": percentile(95),
+                   "p99": percentile(99)}
+
+    incidents = 0
+    downtime = 0.0
+    current = None  # start epoch of the open incident, or None
+    for entry in entries:
+        down = (not entry["ok"] and _counted(entry))
+        up = (entry["ok"] and _counted(entry))
+        if down:
+            if current is None:
+                current = entry["checked_at"]
+        elif up and current is not None:
+            overlap_start = max(current, start)
+            overlap_end = min(entry["checked_at"], end)
+            if overlap_end > overlap_start:
+                incidents += 1
+                downtime += overlap_end - overlap_start
+            current = None
+    if current is not None:
+        # Still down at the end of the recorded history: the
+        # outage accrues downtime to the month end.
+        overlap_start = max(current, start)
+        if end > overlap_start:
+            incidents += 1
+            downtime += end - overlap_start
+    return {"incidents": incidents, "failed_checks": failed,
+            "downtime_seconds": round(downtime, 1), "latency": latency}
+
+
 def validate_sla_targets(endpoints):
     """Reject bad `sla_target` entries at config load.
 
@@ -93,8 +166,13 @@ def sla_report(history, endpoints, year, month):
     `uptime_pct` (None when the month has no counted checks),
     `checks` (how many counted checks the figure is based on),
     `met` (True / False, or None when there is no target or no
-    data), and `shortfall_pct` (target minus uptime when the
-    endpoint breached, else None). Rows follow config order.
+    data), `shortfall_pct` (target minus uptime when the
+    endpoint breached, else None), plus the month detail from
+    `monthly_detail`: `incidents` (confirmed outages that
+    overlapped the month), `failed_checks`, `downtime_seconds`
+    (outage time inside the month), and `latency` (p50/p95/p99
+    in ms over the checks that ran in the month, or None).
+    Rows follow config order.
     """
     rows = []
     for ep in endpoints:
@@ -107,6 +185,7 @@ def sla_report(history, endpoints, year, month):
             met, shortfall = True, None
         else:
             met, shortfall = False, round(target - pct, 1)
+        detail = monthly_detail(history, name, year, month)
         rows.append({
             "name": name,
             "target": target,
@@ -114,6 +193,10 @@ def sla_report(history, endpoints, year, month):
             "checks": counted,
             "met": met,
             "shortfall_pct": shortfall,
+            "incidents": detail["incidents"],
+            "failed_checks": detail["failed_checks"],
+            "downtime_seconds": detail["downtime_seconds"],
+            "latency": detail["latency"],
         })
     return rows
 
@@ -163,3 +246,45 @@ def render_sla_report(report, year, month):
     else:
         lines.append("No breaches.")
     return "\n".join(lines) + "\n"
+
+
+def render_sla_report_csv(report, year, month):
+    """Render an SLA report as CSV, one row per endpoint.
+
+    Columns: month, endpoint, uptime_pct, checks, failed_checks,
+    incidents, downtime_seconds, latency_p50_ms, latency_p95_ms,
+    latency_p99_ms, sla_target, met, shortfall_pct. Missing
+    values (no data, no target) are empty fields.
+    """
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(["month", "endpoint", "uptime_pct", "checks",
+                     "failed_checks", "incidents", "downtime_seconds",
+                     "latency_p50_ms", "latency_p95_ms", "latency_p99_ms",
+                     "sla_target", "met", "shortfall_pct"])
+    month = f"{year:04d}-{month:02d}"
+    for row in report:
+        latency = row.get("latency") or {}
+        writer.writerow([
+            month, row["name"],
+            "" if row["uptime_pct"] is None else row["uptime_pct"],
+            row["checks"], row.get("failed_checks", ""),
+            row.get("incidents", ""), row.get("downtime_seconds", ""),
+            latency.get("p50", ""), latency.get("p95", ""),
+            latency.get("p99", ""),
+            "" if row["target"] is None else row["target"],
+            "" if row["met"] is None else str(row["met"]).lower(),
+            "" if row["shortfall_pct"] is None else row["shortfall_pct"],
+        ])
+    return out.getvalue()
+
+
+def render_sla_report_json(report, year, month):
+    """Render an SLA report as JSON: the month, one object per
+    endpoint (the full `sla_report` row), and the breach list."""
+    payload = {
+        "month": f"{year:04d}-{month:02d}",
+        "endpoints": report,
+        "breaches": [r["name"] for r in breaches(report)],
+    }
+    return json.dumps(payload, indent=2) + "\n"

@@ -120,6 +120,11 @@ endpoint, and serves a small status dashboard over `http.server`.
   --sla-report 2026-11` prints that calendar month's uptime per
   endpoint against its target, with the breach list — endpoints
   that fell short, and by how many percentage points.
+  `--sla-format csv` / `json` exports the same month as CSV or
+  JSON instead (with `--sla-out PATH` to write it to a file),
+  adding per-endpoint incident counts, downtime in the month,
+  and latency p50/p95/p99 over the month, so the report can go
+  into a spreadsheet or a script.
 - Config hot-reload: while the monitor is running, edit
   `config.json` and send SIGHUP (`kill -HUP <pid>`); the new
   endpoints, check interval, per-endpoint check intervals,
@@ -540,6 +545,26 @@ SLA report 2026-11
 1 breach: example
 ```
 
+Export the same month as CSV or JSON instead, for a spreadsheet
+or a script — the export adds per-endpoint incident counts,
+downtime inside the month, and latency p50/p95/p99 over the
+month (an incident is a run of consecutive confirmed-down
+checks, like the status page's incident list, and its downtime
+runs from the first down check to the first passing check after
+it, clipped to the month; an incident still open at the month's
+end accrues downtime to the month end):
+
+```sh
+python3 -m healthcheck.cli --config config.json --sla-report 2026-11 --sla-format csv
+python3 -m healthcheck.cli --config config.json --sla-report 2026-11 --sla-format json --sla-out sla-2026-11.json
+```
+
+The CSV has one row per endpoint (`month, endpoint,
+uptime_pct, checks, failed_checks, incidents, downtime_seconds,
+latency_p50_ms, latency_p95_ms, latency_p99_ms, sla_target, met,
+shortfall_pct`); the JSON is `{"month", "endpoints": [...],
+"breaches": [...]}` with the same fields per endpoint.
+
 ## Tests
 
 ```sh
@@ -698,8 +723,29 @@ make test   # python3 -m unittest discover -s tests -v
   `retries` / `retries_total` per endpoint; `--check` applies the
   same rule and prints "(retried once)" when a retry happened —
   done in 0.28.0.
+- [x] SLA report CSV/JSON export (`--sla-format csv` / `json`,
+  with `--sla-out PATH` to write it to a file): the same monthly
+  report as CSV or JSON, adding per-endpoint incident counts,
+  downtime inside the month, and latency p50/p95/p99 over the
+  month — incident grouping and the uptime exclusions follow
+  the same rules as the text report and the status page — done
+  in 0.29.0.
 
 ## Changelog
+
+- **0.29.0** — SLA report CSV/JSON export: `--sla-report
+  YYYY-MM --sla-format csv` / `json` exports the monthly SLA
+  report instead of printing it as text, and `--sla-out PATH`
+  writes it to a file. The export adds per-endpoint incident
+  counts, downtime inside the month, and latency p50/p95/p99
+  over the month, reusing the text report's uptime math and the
+  status page's incident grouping (consecutive confirmed-down
+  checks are one incident; skips, unconfirmed failures, and
+  maintenance rounds neither start nor end one; downtime is
+  clipped to the month, and an incident still open at the
+  month's end accrues downtime to the month end). The text
+  report is unchanged and stays the default; `--sla-format`
+  and `--sla-out` without `--sla-report` are rejected.
 
 - **0.28.0** — Retry once before a failure counts: when a check
   fails it is immediately retried once, on the same endpoint with

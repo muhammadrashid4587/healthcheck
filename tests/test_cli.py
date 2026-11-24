@@ -177,10 +177,68 @@ class SlaReportTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 main(["--config", cfg_path, "--sla-report", "2026-13"])
 
+    def _sla_setup(self, d):
+        cfg_path = os.path.join(d, "config.json")
+        hist_path = os.path.join(d, "history.json")
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            json.dump({
+                "history_file": hist_path,
+                "endpoints": [
+                    {"name": "api", "type": "tcp", "host": "127.0.0.1",
+                     "port": 1, "timeout": 1, "sla_target": 99.9},
+                ],
+            }, fh)
+        hist = History()
+        import time as _time
+        nov = _time.mktime((2026, 11, 5, 12, 0, 0, 0, 0, -1))
+        hist.record(_result("api", True, at=nov))
+        hist.record(_result("api", False, at=nov + 60))
+        hist.record(_result("api", True, at=nov + 120))
+        save_history(hist, hist_path)
+        return cfg_path
+
+    def test_sla_report_json_format(self):
+        import io
+        from contextlib import redirect_stdout
+        with tempfile.TemporaryDirectory() as d:
+            cfg_path = self._sla_setup(d)
+            out = io.StringIO()
+            with redirect_stdout(out):
+                self.assertEqual(
+                    main(["--config", cfg_path, "--sla-report", "2026-11",
+                          "--sla-format", "json"]), 0)
+            payload = json.loads(out.getvalue())
+            self.assertEqual(payload["month"], "2026-11")
+            self.assertEqual(payload["breaches"], ["api"])
+            self.assertEqual(payload["endpoints"][0]["incidents"], 1)
+            self.assertEqual(
+                payload["endpoints"][0]["downtime_seconds"], 60.0)
+
+    def test_sla_report_csv_to_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg_path = self._sla_setup(d)
+            out_path = os.path.join(d, "sla.csv")
+            self.assertEqual(
+                main(["--config", cfg_path, "--sla-report", "2026-11",
+                      "--sla-format", "csv", "--sla-out", out_path]), 0)
+            with open(out_path, encoding="utf-8") as fh:
+                lines = fh.read().splitlines()
+            self.assertTrue(lines[0].startswith("month,endpoint,"))
+            self.assertIn("api", lines[1])
+            self.assertIn("66.7", lines[1])
+
+    def test_sla_format_without_report_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg_path = os.path.join(d, "config.json")
+            with open(cfg_path, "w", encoding="utf-8") as fh:
+                json.dump({"endpoints": []}, fh)
+            with self.assertRaises(SystemExit):
+                main(["--config", cfg_path, "--sla-format", "json"])
+
 
 class VersionTests(unittest.TestCase):
-    def test_version_is_0_28_0(self):
-        self.assertEqual(__version__, "0.28.0")
+    def test_version_is_0_29_0(self):
+        self.assertEqual(__version__, "0.29.0")
 
 
 if __name__ == "__main__":
