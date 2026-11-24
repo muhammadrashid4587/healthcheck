@@ -30,6 +30,8 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
+from .checker import (DEFAULT_CERT_EXPIRY_WARN_DAYS, cert_expiry_days,
+                      cert_expiring_soon)
 from .maintenance import summarize_windows
 from .sla import parse_month, sla_report, sla_report_payload
 
@@ -133,6 +135,15 @@ def status_snapshot(history, endpoints, now=None,
     page's incident list, so the API and the page can never
     disagree; an ongoing incident has "end" None and its duration
     runs to `now`.
+    "cert_expires_at" is the epoch second the endpoint's TLS
+    certificate expires (the most recent check that could read
+    it), or None when the endpoint is not HTTPS, was never
+    checked, or the check could not read the peer certificate.
+    "cert_expiry_days" is the whole days from `now` until that
+    expiry (negative when expired, None when unknown), and
+    "cert_expiry_warning" is True when the certificate expires
+    within the endpoint's `cert_expiry_warn_days` (30 by default)
+    — the expiry is advisory and never decides up or down.
     When `sla_alerts` is given (the shared breach-alert records from
     the checker loop), "sla_breach_alerted_at" is the epoch second
     the breach alert fired for this endpoint in the current month,
@@ -177,6 +188,11 @@ def status_snapshot(history, endpoints, now=None,
         alerted_at = None
         if alert.get("month") == month_str:
             alerted_at = alert.get("alerted_at")
+        expires_at = history.cert_expiry(name)
+        warn_days = ep.get("cert_expiry_warn_days")
+        if warn_days is None:
+            warn_days = DEFAULT_CERT_EXPIRY_WARN_DAYS
+        ref = now if now is not None else time.time()
         out.append({
             "name": name,
             "status": status,
@@ -185,6 +201,11 @@ def status_snapshot(history, endpoints, now=None,
             "expect_status": ep.get("expect_status"),
             "status_code": cur.get("status_code") if cur is not None
                          else None,
+            "cert_expires_at": expires_at,
+            "cert_expiry_days": cert_expiry_days(expires_at, now=ref),
+            "cert_expiry_warn_days": warn_days,
+            "cert_expiry_warning": cert_expiring_soon(
+                expires_at, warn_days, now=ref),
             "uptime_pct": history.uptime_pct(name),
             "uptime_24h_pct": history.uptime_pct_window(name, 24 * 3600),
             "uptime_7d_pct": history.uptime_pct_window(name, 7 * 24 * 3600),
@@ -312,6 +333,11 @@ def render_metrics(history, endpoints, now=None):
       lists can never disagree. Always present, even at 0; the
       bounded history can truncate a very long past, so it counts
       the incidents still recorded.
+    - ``healthcheck_cert_expiry_days`` (gauge): whole days until
+      the endpoint's TLS certificate expires (negative when
+      expired). Omitted for endpoints with no recorded expiry —
+      plain http / tcp, never checked, or a check that could not
+      read the peer certificate — no data is not an expiry.
     """
     lines = []
     lines.append("# HELP healthcheck_up Whether the endpoint is "
@@ -338,6 +364,18 @@ def render_metrics(history, endpoints, now=None):
         lines.append(
             f'healthcheck_down_seconds{{name="{_prom_label(ep["name"])}"}} '
             f"{down}")
+    lines.append("# HELP healthcheck_cert_expiry_days Days until the "
+                 "endpoint's TLS certificate expires (negative when "
+                 "expired).")
+    lines.append("# TYPE healthcheck_cert_expiry_days gauge")
+    for ep in endpoints:
+        expires_at = history.cert_expiry(ep["name"])
+        days = cert_expiry_days(expires_at, now=now)
+        if days is None:
+            continue
+        lines.append(
+            f'healthcheck_cert_expiry_days'
+            f'{{name="{_prom_label(ep["name"])}"}} {days}')
     lines.append("# HELP healthcheck_uptime_ratio Share of checks that "
                  "were up (all-time).")
     lines.append("# TYPE healthcheck_uptime_ratio gauge")
@@ -447,7 +485,12 @@ def render_dashboard(history, endpoints, now=None,
     is omitted and the page is unchanged. The Down since column
     shows how long a DOWN endpoint's outage has lasted ("12m 34s",
     "-" otherwise), counted from the first failed check in the
-    current run of failures. The SLA breach column
+    current run of failures. The Cert expires column shows whole
+    days until the endpoint's TLS certificate expires ("89d",
+    "12d (soon)" inside its warning window, "expired" once it
+    has lapsed, "-" when no certificate was ever seen — plain
+    http / tcp, never checked, or a check that could not read the
+    peer certificate). The SLA breach column
     shows "BREACH -X.Xpp" for an endpoint below its `sla_target`
     in the current calendar month (with the time its breach alert
     fired, when `sla_alerts` carries a record for it), and "-"
@@ -543,11 +586,31 @@ def render_dashboard(history, endpoints, now=None,
         since = history.down_since(name)
         down_text = (format_duration(ref - since)
                      if status == "DOWN" and since is not None else "-")
+        # When the endpoint's TLS certificate expires: whole days
+        # left, "expired" once it has lapsed, "(soon)" inside the
+        # endpoint's warning window (30 days by default), "-" when
+        # no certificate was ever seen (plain http / tcp, never
+        # checked, or a check that could not read the peer cert).
+        expires_at = history.cert_expiry(name)
+        warn_days = ep.get("cert_expiry_warn_days")
+        if warn_days is None:
+            warn_days = DEFAULT_CERT_EXPIRY_WARN_DAYS
+        if expires_at is None:
+            cert_text = "-"
+        else:
+            days = cert_expiry_days(expires_at, now=ref)
+            if days < 0:
+                cert_text = "expired"
+            elif cert_expiring_soon(expires_at, warn_days, now=ref):
+                cert_text = f"{days}d (soon)"
+            else:
+                cert_text = f"{days}d"
         rows.append(
             f"<tr><td>{html.escape(name)}</td>"
             f"<td class=\"{cls}\">{status}</td>"
             f"<td>{html.escape(down_text)}</td>"
             f"<td>{html.escape(http_status)}</td>"
+            f"<td>{html.escape(cert_text)}</td>"
             f"<td>{html.escape(depends_on)}</td>"
             f"<td>{html.escape(windows)}</td>"
             f"<td>{up}</td><td>{day}</td><td>{week}</td><td>{latency}</td>"
@@ -560,7 +623,7 @@ def render_dashboard(history, endpoints, now=None,
             f"<td>{html.escape(sla_text)}</td>"
             f"<td>{last}</td></tr>"
         )
-    body = "\n".join(rows) or "<tr><td colspan=\"18\">No endpoints configured.</td></tr>"
+    body = "\n".join(rows) or "<tr><td colspan=\"19\">No endpoints configured.</td></tr>"
     if status_page_sources:
         items = "".join(
             f"<li>{html.escape(src['label'])} — "
@@ -574,7 +637,7 @@ def render_dashboard(history, endpoints, now=None,
 <html><head><meta charset="utf-8"><title>healthcheck</title>
 <style>body{{font-family:sans-serif;max-width:720px;margin:2em auto}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccc;padding:6px 10px;text-align:left}}.up{{color:green;font-weight:bold}}.down{{color:red;font-weight:bold}}.skipped{{color:#b8860b;font-weight:bold}}.maintenance{{color:#6a5acd;font-weight:bold}}</style>
 </head><body><h1>healthcheck</h1>
-<table><tr><th>Endpoint</th><th>Status</th><th>Down since</th><th>HTTP status</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Latency</th><th>Latency budget</th><th>Check every</th><th>Retries</th><th>Latency p50 / p95 / p99</th><th>Latency history</th><th>Last error</th><th>SLA breach</th><th>Last check</th></tr>
+<table><tr><th>Endpoint</th><th>Status</th><th>Down since</th><th>HTTP status</th><th>Cert expires</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Latency</th><th>Latency budget</th><th>Check every</th><th>Retries</th><th>Latency p50 / p95 / p99</th><th>Latency history</th><th>Last error</th><th>SLA breach</th><th>Last check</th></tr>
 {body}</table>
 {incidents_html}{sources_html}<p>Rendered {time.strftime('%Y-%m-%d %H:%M:%S')} — reload to update.</p></body></html>"""
 

@@ -10,22 +10,24 @@ fires one webhook alert for the month, and the breach shows on the
 dashboard and in GET /api/status.
 """
 
-__version__ = "0.38.0"
+__version__ = "0.39.0"
 
 from .alerts import (SlaBreachAlerter, WebhookAlerter, alert_payload,
                      post_alert, sla_breach_payload)
 
-from .checker import (CheckResult, check_endpoint,
-                      check_endpoint_with_retry, check_http, check_tcp,
-                      maintenance_result)
+from .checker import (DEFAULT_CERT_EXPIRY_WARN_DAYS, CheckResult,
+                      cert_expiring_soon, cert_expiry_days,
+                      check_endpoint, check_endpoint_with_retry,
+                      check_http, check_tcp, fetch_cert_expiry,
+                      maintenance_result, parse_cert_not_after)
 from .cli import (apply_check_interval_overrides, apply_max_latency_overrides,
                   dry_run_check, endpoint_interval, format_check_line,
                   install_reload_handler, load_status_page_source,
                   make_sla_alerter, merged_status_page_sources, monitor_loop,
                   parse_check_interval, parse_max_latency, reload_config,
                   retry_enabled, select_check_targets,
-                  validate_check_intervals, validate_latency_budgets,
-                  validate_retry_settings,
+                  validate_cert_expiry_warnings, validate_check_intervals,
+                  validate_latency_budgets, validate_retry_settings,
                   validate_status_page_sources)
 from .digest import (DEFAULT_DIGEST_INTERVAL_SECONDS, DigestAlerter,
                      build_digest, render_digest_email,
@@ -52,6 +54,7 @@ __all__ = [
     "__version__",
     "ApiStatusHistory",
     "CheckResult",
+    "DEFAULT_CERT_EXPIRY_WARN_DAYS",
     "DEFAULT_DIGEST_INTERVAL_SECONDS",
     "DigestAlerter",
     "FlapDetector",
@@ -63,6 +66,8 @@ __all__ = [
     "apply_max_latency_overrides",
     "breaches",
     "build_digest",
+    "cert_expiring_soon",
+    "cert_expiry_days",
     "check_endpoint",
     "check_endpoint_with_retry",
     "check_http",
@@ -70,6 +75,7 @@ __all__ = [
     "dry_run_check",
     "endpoint_interval",
     "endpoint_status",
+    "fetch_cert_expiry",
     "fetch_remote_status",
     "format_check_line",
     "format_duration",
@@ -84,6 +90,7 @@ __all__ = [
     "monitor_loop",
     "monthly_detail",
     "monthly_uptime",
+    "parse_cert_not_after",
     "parse_check_interval",
     "parse_max_latency",
     "parse_month",
@@ -110,6 +117,7 @@ __all__ = [
     "sla_snapshot",
     "status_snapshot",
     "summarize_windows",
+    "validate_cert_expiry_warnings",
     "validate_check_intervals",
     "validate_digest_config",
     "validate_latency_budgets",

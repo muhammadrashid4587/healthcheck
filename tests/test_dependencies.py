@@ -235,12 +235,13 @@ class DashboardSkipTests(unittest.TestCase):
         # The api row names its dependency; the db row has none.
         self.assertIn("<td>db</td>", page)
         # Skipped checks show "-" uptime, not 0%. The Down since
-        # column sits between Status and HTTP status, and the HTTP
-        # status column between that and Depends on: a skipped
-        # check never returned a status and is not down, so both
-        # are "-".
+        # column sits between Status and HTTP status, the HTTP
+        # status column between that and Cert expires, and Cert
+        # expires between that and Depends on: a skipped check
+        # never returned a status, never read a certificate, and
+        # is not down, so all three are "-".
         self.assertIn("<td class=\"skipped\">SKIPPED</td><td>-</td>"
-                      "<td>-</td><td>db</td><td>-</td>",
+                      "<td>-</td><td>-</td><td>db</td><td>-</td>",
                       page)
 
 

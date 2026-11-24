@@ -40,6 +40,11 @@ class History:
             # decided it). Entries written before retries existed
             # carry no key and count as 0 wherever it is read.
             "retries": getattr(result, "retries", 0),
+            # Epoch second the peer's TLS certificate expires, for
+            # https checks that could read it (None otherwise).
+            # Entries written before cert expiry existed carry no
+            # key and count as None wherever it is read.
+            "cert_expires_at": getattr(result, "cert_expires_at", None),
         }
         self._checks.setdefault(result.name, deque(maxlen=self.maxlen)).append(entry)
         return entry
@@ -177,6 +182,19 @@ class History:
                     and entry.get("error") is not None):
                 return entry["error"]
         return None
+
+    def cert_expiry(self, name):
+        """Epoch second the endpoint's certificate expires, or None.
+
+        The most recent recorded check's `cert_expires_at` — None
+        when the endpoint was never checked, is not HTTPS, or the
+        check could not read the peer certificate. Entries written
+        before cert expiry existed carry no key and count as None.
+        """
+        cur = self.current(name)
+        if cur is None:
+            return None
+        return cur.get("cert_expires_at")
 
     def retries_total(self, name):
         """Total retries spent on `name`'s recorded checks.

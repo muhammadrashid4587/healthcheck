@@ -14,10 +14,18 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 # Most body assertions target small status pages; never read more
 # than this per check, so a huge response cannot stall the monitor.
 MAX_BODY_BYTES = 1024 * 1024
+
+# Days before a TLS certificate expires that the monitor starts
+# warning about it (per-endpoint `cert_expiry_warn_days` overrides
+# this). Thirty days is enough to renew and redeploy without
+# paging anyone the moment a cert is minted.
+DEFAULT_CERT_EXPIRY_WARN_DAYS = 30
 
 
 @dataclass(frozen=True)
@@ -43,6 +51,13 @@ class CheckResult:
     # part of the same check round, not a second check — only one
     # history entry is recorded either way.
     retries: int = 0
+    # Epoch second the peer's TLS certificate expires, for https
+    # checks that could read it; None for plain http / tcp checks
+    # and when the handshake failed, so no expiry was seen. The
+    # expiry is advisory — it never decides up or down — but it is
+    # recorded with the check so the dashboard and API can warn
+    # before the cert actually lapses.
+    cert_expires_at: float | None = None
 
 
 def maintenance_result(name, summary):
@@ -85,6 +100,100 @@ def build_tls_context(cafile=None, cert=None, key=None):
     if cert is not None:
         context.load_cert_chain(certfile=cert, keyfile=key)
     return context
+
+
+def parse_cert_not_after(cert):
+    """Epoch second a getpeercert() dict's certificate expires.
+
+    `notAfter` is an ASN.1 time like "Nov 24 12:00:00 2028 GMT";
+    the trailing zone token is dropped and the rest parsed as UTC.
+    Returns None when the dict has no usable notAfter, so a peer
+    that presents no certificate (or an odd one) is "unknown
+    expiry", not a crash.
+    """
+    not_after = (cert or {}).get("notAfter")
+    if not isinstance(not_after, str):
+        return None
+    try:
+        stamp, _zone = not_after.rsplit(" ", 1)
+        parsed = datetime.strptime(" ".join(stamp.split()),
+                                   "%b %d %H:%M:%S %Y")
+    except (ValueError, TypeError):
+        return None
+    return parsed.replace(tzinfo=timezone.utc).timestamp()
+
+
+def fetch_cert_expiry(host, port, context=None, timeout=5.0):
+    """Epoch second the peer's TLS certificate expires, or None.
+
+    Opens one short TLS handshake (verified with `context`, or
+    the system CA store when None) and reads the peer
+    certificate's notAfter. Any failure — refused connection,
+    failed handshake, unparseable cert — is None, never an
+    exception: expiry is advisory, the check's own verdict is
+    what matters.
+    """
+    try:
+        ctx = (context if context is not None
+               else ssl.create_default_context())
+        with socket.create_connection((host, port),
+                                     timeout=timeout) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+                cert = ssock.getpeercert()
+        return parse_cert_not_after(cert)
+    except Exception:
+        return None
+
+
+def _cert_expiry_for(url, context, timeout):
+    """Peer certificate expiry (epoch) for an https URL, or None.
+
+    A second, short TLS handshake against the same host: urllib
+    does not expose the socket it used, so the expiry is read
+    separately. Any failure (plain http, bad host, failed
+    handshake) is None, never a crash — a check that cannot read
+    the cert still reports its own result.
+    """
+    if not url.lower().startswith("https://"):
+        return None
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return None
+    if not parsed.hostname:
+        return None
+    try:
+        port = parsed.port or 443
+    except ValueError:
+        return None
+    return fetch_cert_expiry(parsed.hostname, port, context, timeout)
+
+
+def cert_expiry_days(expires_at, now=None):
+    """Whole days from `now` until `expires_at` (epoch), or None.
+
+    Negative when the certificate already expired; None when no
+    expiry was recorded — no certificate was seen, so there is
+    nothing to count down from.
+    """
+    if expires_at is None:
+        return None
+    ref = time.time() if now is None else now
+    return int((expires_at - ref) // 86400)
+
+
+def cert_expiring_soon(expires_at, warn_days=DEFAULT_CERT_EXPIRY_WARN_DAYS,
+                       now=None):
+    """True when the certificate expires within `warn_days` days.
+
+    False when no expiry was recorded — an unknown expiry is not
+    a warning, it is just unknown. An already-expired certificate
+    counts: it is within (past) the warning window.
+    """
+    if expires_at is None:
+        return False
+    ref = time.time() if now is None else now
+    return expires_at - ref <= warn_days * 86400
 
 
 def _check_body(name, body, latency, status, expect_body,
@@ -150,6 +259,13 @@ def check_http(name, url, timeout=5.0, cafile=None, cert=None, key=None,
     or out-of-range value raises ValueError — config load rejects
     bad values first, but check_http must stay safe when called
     directly.
+
+    For https:// URLs the peer certificate's expiry is also read
+    (one extra short TLS handshake — urllib does not expose the
+    socket it used) and returned as `cert_expires_at` on the
+    result, so the monitor can warn before the cert lapses. A
+    failure to read it leaves the expiry None and never changes
+    the verdict: an expiring cert is a warning, not downtime.
     """
     if expect_status is not None and (
             isinstance(expect_status, bool)
@@ -171,24 +287,42 @@ def check_http(name, url, timeout=5.0, cafile=None, cert=None, key=None,
                     if expect_body is not None
                     or expect_body_regex is not None else resp.read(1))
         latency = (time.monotonic() - started) * 1000
+        # The handshake succeeded, so the peer certificate is
+        # readable: record when it expires with the check. A
+        # failure to read it leaves the expiry unknown and never
+        # changes the verdict — the expiry is advisory.
+        expiry = _cert_expiry_for(url, context, timeout)
         if expect_status is not None:
             if status != expect_status:
-                return CheckResult(
+                result = CheckResult(
                     name=name, ok=False, latency_ms=latency,
                     status_code=status,
                     error=f"expected HTTP {expect_status}, got {status}",
                     checked_at=time.time())
+            elif expect_body is not None or expect_body_regex is not None:
+                result = _check_body(name, body, latency, status,
+                                     expect_body, expect_body_regex)
+            else:
+                result = CheckResult(name=name, ok=True,
+                                     latency_ms=latency,
+                                     status_code=status,
+                                     checked_at=time.time())
         elif not 200 <= status < 400:
-            return CheckResult(name=name, ok=False, latency_ms=latency,
-                               status_code=status, error=f"HTTP {status}",
-                               checked_at=time.time())
-        if expect_body is not None or expect_body_regex is not None:
-            return _check_body(name, body, latency, status,
-                               expect_body, expect_body_regex)
-        return CheckResult(name=name, ok=True, latency_ms=latency,
-                           status_code=status, checked_at=time.time())
+            result = CheckResult(name=name, ok=False, latency_ms=latency,
+                                 status_code=status, error=f"HTTP {status}",
+                                 checked_at=time.time())
+        elif expect_body is not None or expect_body_regex is not None:
+            result = _check_body(name, body, latency, status,
+                                 expect_body, expect_body_regex)
+        else:
+            result = CheckResult(name=name, ok=True, latency_ms=latency,
+                                 status_code=status, checked_at=time.time())
+        if expiry is None:
+            return result
+        return dataclasses.replace(result, cert_expires_at=expiry)
     except urllib.error.HTTPError as exc:
         latency = (time.monotonic() - started) * 1000
+        expiry = _cert_expiry_for(url, context, timeout)
         if expect_status is not None and exc.code == expect_status:
             # The expected status arrived as an error response (4xx /
             # 5xx): it still counts, with body assertions applied.
@@ -196,20 +330,27 @@ def check_http(name, url, timeout=5.0, cafile=None, cert=None, key=None,
                     if expect_body is not None
                     or expect_body_regex is not None else b"")
             if expect_body is not None or expect_body_regex is not None:
-                return _check_body(name, body, latency, exc.code,
-                                   expect_body, expect_body_regex)
-            return CheckResult(name=name, ok=True, latency_ms=latency,
-                               status_code=exc.code,
-                               checked_at=time.time())
-        if expect_status is not None:
-            return CheckResult(
+                result = _check_body(name, body, latency, exc.code,
+                                     expect_body, expect_body_regex)
+            else:
+                result = CheckResult(name=name, ok=True,
+                                     latency_ms=latency,
+                                     status_code=exc.code,
+                                     checked_at=time.time())
+        elif expect_status is not None:
+            result = CheckResult(
                 name=name, ok=False, latency_ms=latency,
                 status_code=exc.code,
                 error=f"expected HTTP {expect_status}, got {exc.code}",
                 checked_at=time.time())
-        return CheckResult(name=name, ok=False, latency_ms=latency,
-                           status_code=exc.code, error=f"HTTP {exc.code}",
-                           checked_at=time.time())
+        else:
+            result = CheckResult(name=name, ok=False, latency_ms=latency,
+                                 status_code=exc.code,
+                                 error=f"HTTP {exc.code}",
+                                 checked_at=time.time())
+        if expiry is None:
+            return result
+        return dataclasses.replace(result, cert_expires_at=expiry)
     except Exception as exc:  # timeout, DNS failure, refused connection
         latency = (time.monotonic() - started) * 1000
         return CheckResult(name=name, ok=False, latency_ms=latency,

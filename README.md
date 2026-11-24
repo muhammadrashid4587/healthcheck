@@ -118,6 +118,17 @@ endpoint, and serves a small status dashboard over `http.server`.
   up/down gauge, uptime ratios (all-time, 24h, 7d), a latency summary
   with p50/p95/p99 plus sum and count over the last 24 hours, and
   check totals by result — so a Prometheus server can scrape it.
+- TLS certificate expiry: every HTTPS check reads the peer
+  certificate's expiry (one extra short TLS handshake — urllib
+  does not expose the socket it used) and records it with the
+  check, so the dashboard, `GET /api/status`, and `GET /metrics`
+  can warn before the cert lapses. An expiring cert is a warning,
+  not downtime: the endpoint stays UP, and the dashboard shows
+  whole days left ("89d", "12d (soon)" inside the endpoint's
+  warning window, "expired" once it has lapsed). An endpoint can
+  set `cert_expiry_warn_days` (default 30) to choose its own
+  window; a check that cannot read the peer certificate reports
+  no expiry instead of failing.
 - A JSON API: `GET /api/status` on the dashboard server returns the
   same data as JSON (status, uptime all-time / 24h / 7d, latency,
   last check, recent incidents, dependency, maintenance windows per
@@ -453,6 +464,16 @@ normally without it.
   `https://` endpoint is verified against the system CA store, as
   before. A bad cert file makes the check fail, never crash. The
   TLS options are ignored for plain `http://` URLs.
+- `cert_expiry_warn_days` — how many days before an `https://`
+  endpoint's TLS certificate expires the monitor starts warning
+  about it (optional, either type, e.g. `14`): the dashboard's
+  Cert expires column shows "(soon)" inside the window, `GET
+  /api/status` reports `cert_expiry_warning: true`, and the
+  expiry is still only a warning — the endpoint stays UP, since
+  the certificate has not lapsed yet. The default is 30 days.
+  Must be a positive number (an integer or a float); a bad value
+  is rejected at config load, and the key on a `tcp` endpoint is
+  rejected too — a TCP check has no certificate to warn about.
 - `tcp` endpoint — `host` and `port` required; ok when the connect
   succeeds.
 - `depends_on` — the name of another endpoint in the same config
@@ -492,6 +513,11 @@ current run of failures, unconfirmed ones included), the HTTP status
 (`expected 204, got 200` when the endpoint asserts on a code, the
 bare actual code when it does not, `-` when no status was ever
 returned — TCP endpoints, never-checked, skipped, maintenance),
+when the endpoint's TLS certificate expires (whole days left —
+"89d", "12d (soon)" inside the endpoint's `cert_expiry_warn_days`
+window, "expired" once it has lapsed, `-` when no certificate was
+ever seen — plain http / tcp, never-checked, or a check that could
+not read the peer certificate),
 the endpoint it depends on (or `-`), its maintenance windows (or `-`), uptime % over the
 recorded history, uptime %
 over the last 24 hours and the last 7 days (a `-` when no checks fall
@@ -535,7 +561,14 @@ MAINTENANCE / UNKNOWN, same rules as the dashboard), `depends_on`
 `days`), `expect_status` (the exact status the endpoint must
 return, or `null` when it accepts any 2xx/3xx), `status_code` (the
 most recent actual HTTP status, or `null` when none was ever
-returned), `uptime_pct`, `uptime_24h_pct`, `uptime_7d_pct` (`null` when
+returned), `cert_expires_at` (the epoch second the endpoint's TLS
+certificate expires, or `null` when no certificate was ever seen),
+`cert_expiry_days` (whole days until that expiry, negative when
+expired, `null` when unknown), `cert_expiry_warn_days` (the
+endpoint's warning window in days, 30 by default), and
+`cert_expiry_warning` (whether the certificate expires inside that
+window — advisory only, it never changes the endpoint's status),
+`uptime_pct`, `uptime_24h_pct`, `uptime_7d_pct` (`null` when
 no checks fall in that window), `latency_ms` (most recent, or `null`),
 `max_latency_ms` (the latency budget in ms the endpoint must answer
 within, or `null` when it has none),
@@ -581,7 +614,10 @@ failed check in the current run, unconfirmed ones included;
 omitted for a never-checked, SKIPPED, or maintenance endpoint),
 `healthcheck_uptime_ratio` (gauge, share of
 checks that were up, all-time) plus `healthcheck_uptime_ratio_24h`
-and `healthcheck_uptime_ratio_7d`, `healthcheck_latency_ms` (summary
+and `healthcheck_uptime_ratio_7d`, `healthcheck_cert_expiry_days`
+(gauge, whole days until the endpoint's TLS certificate expires —
+negative when expired, omitted when no expiry was recorded),
+`healthcheck_latency_ms` (summary
 with `quantile="0.5" / "0.95" / "0.99"` in ms over the last 24 hours,
 plus `_sum` and `_count`), `healthcheck_checks_total` (counter,
 split by `result="success"` / `"failure"`), and
@@ -962,8 +998,43 @@ make test   # python3 -m unittest discover -s tests -v
   unknown endpoint or a non-positive limit is an error (exit 2),
   not an empty report; the totals always sum the rows actually
   exported — done in 0.38.0.
+- [x] TLS certificate-expiry warnings: every HTTPS check reads
+  the peer certificate's expiry (one extra short TLS handshake,
+  since urllib does not expose the socket it used) and records
+  it with the check, so the monitor can warn before the cert
+  lapses. An expiring cert is a warning, not downtime — the
+  endpoint stays UP. The dashboard gains a Cert expires column
+  (whole days left, "(soon)" inside the warning window,
+  "expired" once it has lapsed, "-" when no certificate was ever
+  seen), `GET /api/status` gains `cert_expires_at` /
+  `cert_expiry_days` / `cert_expiry_warn_days` /
+  `cert_expiry_warning` per endpoint, and `GET /metrics` gains a
+  `healthcheck_cert_expiry_days` gauge. An endpoint can set
+  `cert_expiry_warn_days` (default 30, validated at load, `tcp`
+  endpoints rejected); a check that cannot read the peer
+  certificate reports no expiry instead of failing — done in
+  0.39.0.
 
 ## Changelog
+
+- **0.39.0** — TLS certificate-expiry warnings: every HTTPS check
+  reads the peer certificate's `notAfter` (one extra short TLS
+  handshake against the same host, verified with the same context
+  — the custom CA and client cert when the endpoint sets them)
+  and records it as `cert_expires_at` on the check result, so
+  the dashboard, `GET /api/status`, and `GET /metrics` can warn
+  before the cert lapses. The dashboard gains a Cert expires
+  column ("89d", "12d (soon)" inside the endpoint's warning
+  window, "expired" once it has lapsed, "-" when no certificate
+  was ever seen); `GET /api/status` gains `cert_expires_at`,
+  `cert_expiry_days`, `cert_expiry_warn_days`, and
+  `cert_expiry_warning` per endpoint; `GET /metrics` gains a
+  `healthcheck_cert_expiry_days` gauge (omitted when no expiry
+  was recorded). An endpoint can set `cert_expiry_warn_days`
+  (default 30, a positive number, validated at config load and
+  rejected on `tcp` endpoints). An expiring cert is a warning,
+  not downtime — the endpoint stays UP — and a check that cannot
+  read the peer certificate reports no expiry instead of failing.
 
 - **0.38.0** — `--incidents` filters: `--endpoint NAME` exports
   only that endpoint's incidents and `--limit N` caps the

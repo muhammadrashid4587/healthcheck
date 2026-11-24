@@ -62,6 +62,7 @@ def load_config(path):
     validate_body_assertions(endpoints)
     validate_expect_status(endpoints)
     validate_latency_budgets(endpoints)
+    validate_cert_expiry_warnings(endpoints)
     validate_check_intervals(endpoints)
     validate_retry_settings(cfg, endpoints)
     validate_maintenance_windows(endpoints)
@@ -430,6 +431,34 @@ def validate_latency_budgets(endpoints):
             raise ValueError(
                 f"endpoint {ep['name']!r}: max_latency_ms must be a "
                 f"positive number of milliseconds, not {value!r}")
+
+
+def validate_cert_expiry_warnings(endpoints):
+    """Reject bad `cert_expiry_warn_days` entries at config load.
+
+    An http endpoint may declare how many days before its TLS
+    certificate expires the monitor should warn (default 30,
+    `DEFAULT_CERT_EXPIRY_WARN_DAYS`): the value must be a positive
+    number (an integer or a float, not a bool, not a string).
+    TCP endpoints have no certificate, so the key is rejected
+    there. Raises ValueError with a clear message; the monitor
+    refuses to start rather than run with a warning window it can
+    never judge.
+    """
+    for ep in endpoints:
+        value = ep.get("cert_expiry_warn_days")
+        if value is None:
+            continue
+        if ep["type"] != "http":
+            raise ValueError(
+                f"endpoint {ep['name']!r}: cert_expiry_warn_days only "
+                f"applies to http endpoints")
+        if (isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or value <= 0):
+            raise ValueError(
+                f"endpoint {ep['name']!r}: cert_expiry_warn_days must "
+                f"be a positive number of days, not {value!r}")
 
 
 def parse_max_latency(spec):
