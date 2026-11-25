@@ -203,6 +203,32 @@ class History:
             start = entry["checked_at"]
         return start
 
+    def consecutive_failures(self, name):
+        """How many failed checks in a row an endpoint has right now.
+
+        The current run of consecutive failed checks that actually
+        ran: walk back from the most recent entry while it is a
+        failure and count them. Unconfirmed failures below the flap
+        threshold count — the run started when checks first failed,
+        not when the threshold confirmed the outage, so this count
+        and `down_since` are the same run and can never disagree.
+        A success ends the run, so a recovered endpoint is 0; a
+        skipped or maintenance round never ran, so one also ends
+        the run. Returns 0 when the endpoint was never checked.
+        The bounded history can truncate a very long run, so this
+        is the recorded run, not necessarily the true one.
+        """
+        checks = self._checks.get(name)
+        if not checks:
+            return 0
+        count = 0
+        for entry in reversed(checks):
+            if (entry.get("ok", False) or entry.get("skipped", False)
+                    or entry.get("maintenance", False)):
+                break
+            count += 1
+        return count
+
     def last_error(self, name):
         """Error string of the endpoint's most recent failed check.
 

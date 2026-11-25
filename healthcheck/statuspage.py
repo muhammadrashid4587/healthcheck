@@ -126,6 +126,7 @@ def _render_source(history, endpoints, generated, label=None):
         rows.append(
             f"<tr><td>{html.escape(name)}</td>"
             f"<td class=\"{cls}\">{status}{status_detail}</td>"
+            f"<td>{history.consecutive_failures(name)}</td>"
             f"<td>{up}</td><td>{day}</td><td>{week}</td><td>{month}</td><td>{latency}</td>"
             f"<td>{latency_sparkline(history, name)}</td><td>{last}</td></tr>"
         )
@@ -158,7 +159,7 @@ def _render_source(history, endpoints, generated, label=None):
                 f"<h3>{html.escape(name)}</h3><ul>{''.join(items)}</ul>"
                 f"<p>Duration histogram: {buckets}</p>")
     body = "\n".join(rows) or \
-        "<tr><td colspan=\"9\">No endpoints configured.</td></tr>"
+        "<tr><td colspan=\"10\">No endpoints configured.</td></tr>"
     if down_count:
         banner = (f"<p class=\"banner down\">{down_count} endpoint"
                   f"{'s' if down_count != 1 else ''} down</p>")
@@ -168,7 +169,7 @@ def _render_source(history, endpoints, generated, label=None):
                       if incident_sections
                       else "<p>No incidents recorded.</p>")
     table = (
-        "<table><tr><th>Endpoint</th><th>Status</th><th>Uptime</th>"
+        "<table><tr><th>Endpoint</th><th>Status</th><th>Fail streak</th><th>Uptime</th>"
         "<th>Uptime 24h</th><th>Uptime 7d</th><th>Uptime 30d</th><th>Latency</th>"
         "<th>Latency history</th><th>Last check</th></tr>\n"
         f"{body}</table>")

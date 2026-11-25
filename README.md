@@ -566,7 +566,12 @@ normally without it.
 (UP / DOWN / SKIPPED / MAINTENANCE / UNKNOWN), how long the current
 outage has lasted (the Down since column — a duration like "12m 34s"
 when DOWN, `-` otherwise, counted from the first failed check in the
-current run of failures, unconfirmed ones included), the HTTP method
+current run of failures, unconfirmed ones included), how many failed
+checks in a row the endpoint has right now (the Fail streak column —
+`0` when it is up or was never checked, so a still-UP endpoint with
+1 or 2 shows how close it is to the flap threshold confirming it
+down; it is the same run Down since starts from, so the two can
+never disagree), the HTTP method
 the endpoint is checked with (`HEAD`, `POST`, `-` when it uses the
 default GET — TCP endpoints show `-` too), the names of the extra
 request headers the check sends (`Authorization`, `X-Api-Key`, `-`
@@ -672,7 +677,13 @@ it has not fired — the same computation as `--sla-report`, so the
 live status and the report can never disagree), `down_since` (the
 epoch second the current outage started — the first failed check
 in the current run of failures, unconfirmed ones included — or
-`null` when the endpoint is not currently down), `recent_incidents`
+`null` when the endpoint is not currently down), `consecutive_failures`
+(how many failed checks in a row the endpoint has right now — `0`
+when it is up or was never checked — the same run `down_since`
+starts, so the count and the outage clock can never disagree;
+read it against the configured `flap_threshold`, 3 by default, to
+see how close a still-UP endpoint is to being confirmed down),
+`recent_incidents`
 (the endpoint's recent outages, newest first, at most 5 — each
 `{"start", "end", "checks", "ongoing", "duration_s"}`, grouped the
 same way as the static status page's incident list, so the API and
@@ -1241,9 +1252,31 @@ make test   # python3 -m unittest discover -s tests -v
   column and `GET /api/status` gains `headers` per endpoint, both
   listing only the header names (sorted, `null` / `-` when the
   endpoint sends none) — done in 0.51.0.
+- [x] Per-endpoint consecutive-failures counter: the current run
+  of failed checks that actually ran, from the persisted history
+  (unconfirmed failures below the flap threshold count, a success
+  or a skipped / maintenance round ends the run, `0` when up or
+  never checked) — shown as a Fail streak column on the dashboard
+  and the static status page, and as `consecutive_failures` in
+  `GET /api/status`, next to `down_since`, which starts from the
+  same run, so the count and the outage clock can never disagree.
+  An operator reads it against the configured `flap_threshold`
+  (3 by default) to see how close a still-UP endpoint is to being
+  confirmed down — done in 0.52.0.
 
 ## Changelog
 
+- **0.52.0** — Per-endpoint consecutive-failures counter: the
+  current run of failed checks that actually ran, from the
+  persisted history — unconfirmed failures below the flap
+  threshold count, a success or a skipped / maintenance round ends
+  the run, `0` when the endpoint is up or was never checked. The
+  dashboard and the static status page gain a Fail streak column
+  and `GET /api/status` gains `consecutive_failures` per endpoint,
+  next to `down_since`, which starts from the same run, so the
+  count and the outage clock can never disagree. An operator reads
+  it against the configured `flap_threshold` (3 by default) to see
+  how close a still-UP endpoint is to being confirmed down.
 - **0.51.0** — Per-endpoint custom request headers: an `http`
   endpoint can set `headers` (e.g. `{"Authorization": "Bearer
   ..."}` for a health endpoint behind auth, or `{"X-Api-Key":
