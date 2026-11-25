@@ -721,7 +721,12 @@ split by `result="success"` / `"failure"`), and
 `healthcheck_incidents_total` (counter, total recorded incidents
 per endpoint — runs of consecutive confirmed-down checks — from
 the same grouping the incident lists use, so the counter and the
-lists can never disagree; always present, even at 0). The same
+lists can never disagree; always present, even at 0), and
+`healthcheck_consecutive_failures` (gauge, how many failed
+checks in a row the endpoint has right now — the same run
+`down_since` starts from, so the gauge and the outage clock can
+never disagree; always present, even at 0, so a Prometheus
+server can alert when it reaches the flap threshold). The same
 exclusion rules apply as everywhere else: skipped and maintenance
 checks never ran, so they are omitted from the up gauge and the
 totals and carry no latency; a failure below the flap threshold
@@ -1263,9 +1268,26 @@ make test   # python3 -m unittest discover -s tests -v
   An operator reads it against the configured `flap_threshold`
   (3 by default) to see how close a still-UP endpoint is to being
   confirmed down — done in 0.52.0.
+- [x] Consecutive-failures gauge in `GET /metrics`:
+  `healthcheck_consecutive_failures` exposes the same
+  `consecutive_failures` streak per endpoint, so a Prometheus
+  server can alert on it (e.g. when it reaches the configured
+  `flap_threshold`) — always present, even at 0, and reading the
+  same `History.consecutive_failures()` figure `GET /api/status`
+  reports, so the gauge and the API can never disagree — done in
+  0.53.0.
 
 ## Changelog
 
+- **0.53.0** — Consecutive-failures gauge in `GET /metrics`:
+  `healthcheck_consecutive_failures` exposes the current run of
+  failed checks per endpoint, from the same
+  `History.consecutive_failures()` figure `GET /api/status`
+  reports as `consecutive_failures`, so the gauge and the API can
+  never disagree. Always present, even at 0 (a never-checked
+  endpoint is 0, a success resets the run to 0), so the series is
+  safe to alert on — an operator alerts when it reaches the
+  configured `flap_threshold` (3 by default).
 - **0.52.0** — Per-endpoint consecutive-failures counter: the
   current run of failed checks that actually ran, from the
   persisted history — unconfirmed failures below the flap

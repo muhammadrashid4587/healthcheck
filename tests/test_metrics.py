@@ -74,6 +74,50 @@ class MetricsTests(unittest.TestCase):
                                     now=1_700_000_000.0))
         self.assertEqual(m[("healthcheck_up", (("name", "web"),))], "1")
 
+    def test_consecutive_failures_gauge(self):
+        hist = History()
+        hist.record(_result("web", True))
+        hist.record(_result("web", False))
+        hist.record(_result("web", False))
+        hist.record(_result("db", False))
+        m = _metrics(render_metrics(hist, self.endpoints + [
+            {"name": "fresh", "type": "tcp", "host": "127.0.0.1",
+             "port": 1}], now=1_700_000_000.0))
+        self.assertEqual(m[("healthcheck_consecutive_failures",
+                            (("name", "web"),))], "2")
+        self.assertEqual(m[("healthcheck_consecutive_failures",
+                            (("name", "db"),))], "1")
+        # Always present, even at 0 — safe to alert on.
+        self.assertEqual(m[("healthcheck_consecutive_failures",
+                            (("name", "fresh"),))], "0")
+
+    def test_consecutive_failures_gauge_resets_on_success(self):
+        hist = History()
+        hist.record(_result("web", False))
+        hist.record(_result("web", False))
+        hist.record(_result("web", True))
+        m = _metrics(render_metrics(hist, self.endpoints[:1],
+                                    now=1_700_000_000.0))
+        self.assertEqual(m[("healthcheck_consecutive_failures",
+                            (("name", "web"),))], "0")
+
+    def test_consecutive_failures_gauge_agrees_with_api_status(self):
+        # The gauge reads the same History.consecutive_failures
+        # figure GET /api/status reports, so the two can never
+        # disagree.
+        from healthcheck.server import status_snapshot
+        hist = History()
+        hist.record(_result("web", False))
+        hist.record(_result("web", False))
+        snap = status_snapshot(hist, self.endpoints[:1],
+                               now=1_700_000_000.0)
+        m = _metrics(render_metrics(hist, self.endpoints[:1],
+                                    now=1_700_000_000.0))
+        self.assertEqual(
+            m[("healthcheck_consecutive_failures",
+               (("name", "web"),))],
+            str(snap["endpoints"][0]["consecutive_failures"]))
+
     def test_uptime_ratio_gauges(self):
         m = _metrics(render_metrics(self.history, self.endpoints,
                                     now=1_700_000_000.0))

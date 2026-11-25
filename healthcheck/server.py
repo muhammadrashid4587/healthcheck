@@ -481,6 +481,14 @@ def render_metrics(history, endpoints, now=None):
       has been down, 0 when it is up. An endpoint that was never
       checked, is currently SKIPPED, or is in maintenance has no
       current reading, so it is omitted — no data is not a 0.
+    - ``healthcheck_consecutive_failures`` (gauge): how many
+      failed checks in a row the endpoint has right now, from
+      ``History.consecutive_failures`` — the same run
+      ``down_since`` starts from, so the gauge and the outage
+      clock can never disagree. Always present, even at 0: a
+      never-checked endpoint is 0, and a success resets the run
+      to 0, so the series is safe to alert on (e.g. alert when it
+      reaches the configured flap threshold).
     - ``healthcheck_uptime_ratio`` (gauge): share of checks that
       were up, all-time, plus ``_24h``, ``_7d``, and ``_30d``
       variants over the last 24 hours / 7 days / 30 days. Omitted
@@ -537,6 +545,15 @@ def render_metrics(history, endpoints, now=None):
         lines.append(
             f'healthcheck_down_seconds{{name="{_prom_label(ep["name"])}"}} '
             f"{down}")
+    lines.append("# HELP healthcheck_consecutive_failures Consecutive "
+                 "failed checks in a row right now (0 when up or "
+                 "never checked).")
+    lines.append("# TYPE healthcheck_consecutive_failures gauge")
+    for ep in endpoints:
+        lines.append(
+            f'healthcheck_consecutive_failures'
+            f'{{name="{_prom_label(ep["name"])}"}} '
+            f"{history.consecutive_failures(ep['name'])}")
     lines.append("# HELP healthcheck_cert_expiry_days Days until the "
                  "endpoint's TLS certificate expires (negative when "
                  "expired).")
