@@ -49,7 +49,11 @@ endpoint, and serves a small status dashboard over `http.server`.
   endpoint's own `webhook` URL when it has one, else the global
   `webhook_url`; a sustained breach pages exactly once, and a
   p95 that falls back below the threshold re-arms, so the next
-  crossing pages again. Shown as `ALERT 812.3 > 400 ms` in the
+  crossing pages again. `--latency-p95-alert` fires the same
+  alerts once from the command line and exits, for a cron job or
+  a manual check — a fresh process carries no record of an
+  earlier crossing, so a sustained breach pages again on the
+  next run. Shown as `ALERT 812.3 > 400 ms` in the
   dashboard's Latency p95 alert column (with the time the alert
   fired appended) and as `latency_p95_alert: true` in `GET
   /api/status`. Set in the config file or with
@@ -578,7 +582,16 @@ normally without it.
   re-arms, so the next crossing fires again; a failed delivery
   is logged and the breach is still recorded as alerted, so it
   is not re-sent. The alert and when it fired show on the
-  dashboard and in `GET /api/status`.
+  dashboard and in `GET /api/status`. `--latency-p95-alert`
+  fires the same alerts once from the command line and exits,
+  for a cron job or a manual check: it reads the persisted
+  history (needs `history_file` in the config, or
+  `--history-file`) and pages for every endpoint whose windowed
+  p95 is above its threshold right now — one alert per endpoint
+  per run, since a fresh process carries no record of an earlier
+  crossing, so a sustained breach pages again on the next run;
+  with no webhook configured anywhere it prints a note and
+  sends nothing.
   An endpoint can set its own `webhook` URL instead: its
   state-change alerts go to its own channel, and its slice of the
   alert digest is POSTed there too (see `alert_digest` below) —
@@ -1736,8 +1749,47 @@ make test   # python3 -m unittest discover -s tests -v
   0.70.0. (The 0.69.0 changelog's "Next" named the p50 / p95 /
   p99 column, which had already shipped in 0.59.0; the p95 alert
   column was the column actually still missing from the page.)
+- [x] `--latency-p95-alert` one-shot CLI: the flag fires the
+  p95 breach alerts once from the command line and exits, like
+  `--sla-alert` — it reads the persisted history and POSTs a
+  `latency_p95_breach` payload for every endpoint whose windowed
+  p95 over the last 24 hours is above its
+  `latency_p95_threshold_ms` right now, to the endpoint's own
+  `webhook` when it has one, else the global `webhook_url`; one
+  alert per endpoint per run, since a fresh process carries no
+  record of an earlier crossing, so a sustained breach pages
+  again on the next run. With no webhook configured anywhere it
+  prints a note and sends nothing, and with no breach it prints
+  that too and exits 0 — done in 0.71.0.
+- [ ] `--cert-expiry-alert` one-shot CLI: the same one-shot
+  shape as `--sla-alert` and `--latency-p95-alert` for the
+  certificate-expiry warning — it reads the persisted history
+  and fires the `cert_expiry` alert once from the command line
+  for every endpoint whose certificate is inside its warning
+  window, so a cron job can page on an expiring cert without
+  running the monitor. Today the monitor loop is the only
+  trigger.
 
 ## Changelog
+
+- **0.71.0** — `--latency-p95-alert` one-shot CLI: the flag
+  fires the p95 breach alerts once from the command line and
+  exits, like `--sla-alert` — it reads the persisted history
+  (needs `history_file` in the config, or `--history-file`) and
+  POSTs a `latency_p95_breach` payload for every endpoint whose
+  windowed p95 over the last 24 hours is above its
+  `latency_p95_threshold_ms` right now, to the endpoint's own
+  `webhook` when it has one, else the global `webhook_url`,
+  reusing the same shared `LatencyP95Alerter` the monitor loop
+  runs, so the firing decision can never disagree with what the
+  dashboard and `GET /api/status` show. One alert per endpoint
+  per run, and with no webhook configured anywhere it prints a
+  note and sends nothing. Honest limit: a fresh process carries
+  no record of an earlier crossing, so a sustained breach pages
+  again on the next run — unlike the monitor loop, which pages
+  once per crossing. Next: a `--cert-expiry-alert` one-shot CLI
+  for the certificate-expiry warning (the loop is the only
+  trigger for it today).
 
 - **0.70.0** — Latency p95 alert column on the static status page:
   the `--status-page` output gains the same column the dashboard

@@ -15,7 +15,7 @@ from healthcheck.alerts import (LatencyP95Alerter,
                                 latency_p95_breach_payload)
 from healthcheck.checker import CheckResult
 from healthcheck.cli import (apply_latency_p95_threshold_overrides,
-                             load_config, make_latency_p95_alerter,
+                             load_config, main, make_latency_p95_alerter,
                              monitor_loop, parse_latency_p95_threshold,
                              reload_config,
                              validate_latency_p95_thresholds)
@@ -492,6 +492,85 @@ class MonitorLoopTests(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+
+class LatencyP95AlertCliTests(unittest.TestCase):
+    _CLI_ENDPOINTS = [
+        {"name": "api", "type": "http", "url": "http://example.com",
+         "latency_p95_threshold_ms": 500},
+        {"name": "web", "type": "http", "url": "http://example.com",
+         "latency_p95_threshold_ms": 500},
+        {"name": "quiet", "type": "tcp", "host": "127.0.0.1",
+         "port": 5432},
+    ]
+
+    def _history(self, slow=True):
+        # Seeded around the real clock: the one-shot evaluates
+        # the p95 over the last 24 hours from now.
+        ref = time.time()
+        history = History()
+        latencies = [100.0] * 10 + [800.0] * 10 if slow \
+            else [100.0] * 20
+        for i, latency in enumerate(latencies):
+            history.record(_result("api", latency, ref - 3600 + i))
+        for i in range(20):
+            history.record(_result("web", 100.0, ref - 3600 + i))
+        return history
+
+    def _write(self, d, history, webhook_url=None):
+        hist_path = os.path.join(d, "history.json")
+        history.save(hist_path)
+        cfg = {"history_file": hist_path,
+               "endpoints": self._CLI_ENDPOINTS}
+        if webhook_url is not None:
+            cfg["webhook_url"] = webhook_url
+        cfg_path = os.path.join(d, "config.json")
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh)
+        return cfg_path
+
+    def test_latency_p95_alert_posts_the_breach_and_exits_zero(self):
+        server = _run_server(status=200)
+        try:
+            url = f"http://127.0.0.1:{server.server_port}/hook"
+            with tempfile.TemporaryDirectory() as d:
+                cfg_path = self._write(d, self._history(), url)
+                code = main(["--config", cfg_path,
+                             "--latency-p95-alert"])
+            self.assertEqual(code, 0)
+            self.assertEqual(len(_CaptureHandler.received), 1)
+            path, content_type, body = _CaptureHandler.received[0]
+            self.assertEqual(path, "/hook")
+            self.assertEqual(content_type, "application/json")
+            payload = json.loads(body)
+            self.assertEqual(payload["type"], "latency_p95_breach")
+            self.assertEqual(payload["endpoint"], "api")
+            self.assertEqual(payload["p95_ms"], 800.0)
+            self.assertEqual(payload["threshold_ms"], 500)
+            self.assertEqual(payload["window_hours"], 24)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_latency_p95_alert_with_no_breach_sends_nothing(self):
+        server = _run_server(status=200)
+        try:
+            url = f"http://127.0.0.1:{server.server_port}/hook"
+            with tempfile.TemporaryDirectory() as d:
+                cfg_path = self._write(d, self._history(slow=False), url)
+                self.assertEqual(
+                    main(["--config", cfg_path, "--latency-p95-alert"]),
+                    0)
+            self.assertEqual(_CaptureHandler.received, [])
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_latency_p95_alert_with_no_webhook_sends_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg_path = self._write(d, self._history())
+            self.assertEqual(
+                main(["--config", cfg_path, "--latency-p95-alert"]), 0)
 
 
 if __name__ == "__main__":

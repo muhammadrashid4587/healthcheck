@@ -1941,6 +1941,15 @@ def main(argv=None):
                              "URL in the config (or --webhook-url) or "
                              "a per-endpoint webhook — with none "
                              "configured, nothing is sent")
+    parser.add_argument("--latency-p95-alert", action="store_true",
+                        help="fire a webhook alert for every endpoint "
+                             "whose windowed p95 latency over the last "
+                             "24 hours is above its "
+                             "latency_p95_threshold_ms and exit (one "
+                             "alert per endpoint per invocation). "
+                             "Needs a webhook URL in the config (or "
+                             "--webhook-url) or a per-endpoint webhook "
+                             "— with none configured, nothing is sent")
     args = parser.parse_args(argv)
     if args.status_page_source and not args.status_page:
         parser.error("--status-page-source needs --status-page")
@@ -2067,6 +2076,23 @@ def main(argv=None):
                       f"in {payload['month']}")
         else:
             print("No SLA breaches to alert on.")
+        return 0
+    if args.latency_p95_alert:
+        path = history_path(cfg, args)
+        history = load_history(path, maxlen=cfg.get("history", 100))
+        p95_alerter = make_latency_p95_alerter(cfg, args)
+        if p95_alerter is None:
+            print("No webhook configured; no latency p95 alert sent.")
+            return 0
+        sent = p95_alerter.maybe_alert(history, cfg.get("endpoints", []))
+        if sent:
+            for payload in sent:
+                print(f"Latency p95 alert sent for "
+                      f"{payload['endpoint']}: p95 "
+                      f"{payload['p95_ms']:.1f} ms above threshold "
+                      f"{payload['threshold_ms']:.1f} ms")
+        else:
+            print("No latency p95 breaches to alert on.")
         return 0
     if args.check is not None:
         name = None if args.check == "__all__" else args.check
