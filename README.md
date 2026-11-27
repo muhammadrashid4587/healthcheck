@@ -45,12 +45,17 @@ endpoint, and serves a small status dashboard over `http.server`.
   an endpoint can declare the p95 latency it must stay within
   (e.g. 400 ms); when the p95 over the last 24 hours crosses it,
   the endpoint is in a latency-alert state — advisory only, it
-  stays UP and no webhook fires — shown as `ALERT 812.3 >
-  400 ms` in the dashboard's Latency p95 alert column and as
-  `latency_p95_alert: true` in `GET /api/status`. Set in the
-  config file or with `--latency-p95-threshold NAME=MS`
-  (repeatable, flag wins); a bad value is rejected at config
-  load, and a SIGHUP reload picks up changes.
+  stays UP — and one webhook alert fires per crossing, to the
+  endpoint's own `webhook` URL when it has one, else the global
+  `webhook_url`; a sustained breach pages exactly once, and a
+  p95 that falls back below the threshold re-arms, so the next
+  crossing pages again. Shown as `ALERT 812.3 > 400 ms` in the
+  dashboard's Latency p95 alert column (with the time the alert
+  fired appended) and as `latency_p95_alert: true` in `GET
+  /api/status`. Set in the config file or with
+  `--latency-p95-threshold NAME=MS` (repeatable, flag wins); a
+  bad value is rejected at config load, and a SIGHUP reload
+  picks up changes.
 - Dry-run mode (`--check [NAME]`): validate the config, run one
   check pass over every endpoint (or just the named one, with its
   dependencies), print the per-endpoint verdict — UP/DOWN with
@@ -547,6 +552,20 @@ normally without it.
   [YYYY-MM]` fires the same alerts once from the command line and
   exits, for a cron job or a manual check (with no webhook
   configured anywhere, it prints a note and sends nothing).
+  The same URL also receives p95 latency breach alerts: when an
+  endpoint's windowed p95 over the last 24 hours crosses its
+  `latency_p95_threshold_ms`, one POST goes out with
+  `{"type": "latency_p95_breach", "endpoint", "p95_ms",
+  "threshold_ms", "window_hours", "checked_at"}` — the p95 that
+  crossed, the threshold it crossed, the 24-hour window, and the
+  most recent check time — to the endpoint's own `webhook` when
+  it has one, else the global `webhook_url`. One alert per
+  crossing: later rounds while the p95 stays above the threshold
+  do not re-fire, and a p95 that falls back below the threshold
+  re-arms, so the next crossing fires again; a failed delivery
+  is logged and the breach is still recorded as alerted, so it
+  is not re-sent. The alert and when it fired show on the
+  dashboard and in `GET /api/status`.
   An endpoint can set its own `webhook` URL instead: its
   state-change alerts go to its own channel, and its slice of the
   alert digest is POSTed there too (see `alert_digest` below) —
@@ -682,18 +701,28 @@ normally without it.
   `ALERT 812.3 > 400 ms` and `GET /api/status` reports
   `latency_p95_alert: true` next to `latency_p95_threshold_ms`.
   The alert is advisory only — the endpoint stays UP, like a
-  cert-expiry warning or an SLA breach, and no webhook fires;
-  it clears itself as soon as a later round's p95 falls back
-  inside the threshold. An endpoint with no threshold never
-  alerts, and a threshold with no recorded latencies in the
-  window is not a slowdown either. Must be a positive number
-  (an integer or a float); a bad value is rejected at config
-  load. The `--latency-p95-threshold NAME=MS` flag (repeatable)
-  sets or replaces it for one endpoint, and the flag wins over
-  the config file; a flag naming an endpoint that is not in the
-  config is rejected. A SIGHUP reload picks up
-  `latency_p95_threshold_ms` changes from the edited file (a bad
-  value keeps the running config), and re-applies the flags.
+  cert-expiry warning or an SLA breach — and one webhook alert
+  fires per crossing when a webhook is configured: the first
+  round that finds the p95 above the threshold POSTs a
+  `latency_p95_breach` payload (endpoint, p95, threshold, the
+  24-hour window, the most recent check time) to the endpoint's
+  own `webhook` URL when it has one, else the global
+  `webhook_url`; later rounds while the p95 stays above it do
+  not re-fire, and the alert re-arms — and the dashboard and
+  `GET /api/status` drop the alert time — as soon as a later
+  round's p95 falls back inside the threshold, so the next
+  crossing fires again. A failed delivery is logged and never
+  stops the monitor, and the breach is still recorded as
+  alerted, so a failed alert is not re-sent. An endpoint with
+  no threshold never alerts, and a threshold with no recorded
+  latencies in the window is not a slowdown either. Must be a
+  positive number (an integer or a float); a bad value is
+  rejected at config load. The `--latency-p95-threshold NAME=MS`
+  flag (repeatable) sets or replaces it for one endpoint, and
+  the flag wins over the config file; a flag naming an endpoint
+  that is not in the config is rejected. A SIGHUP reload picks
+  up `latency_p95_threshold_ms` changes from the edited file (a
+  bad value keeps the running config), and re-applies the flags.
 - `cert_expiry_warn_days` — how many days before an `https://`
   endpoint's TLS certificate expires the monitor starts warning
   about it (optional, either type, e.g. `14`): the dashboard's
@@ -784,9 +813,10 @@ when it has none), the endpoint's own check interval
 a latency p50 / p95 / p99 column (nearest-rank percentiles
 over the last 24 hours, `-` when no checks ran in that window), a Latency p95 alert column
 (`ALERT 812.3 > 400 ms` when that p95 crosses the endpoint's
-`latency_p95_threshold_ms`, `p95 210.0 / 400 ms` when it is
+`latency_p95_threshold_ms`, with the time its breach alert fired
+appended when one went out, `p95 210.0 / 400 ms` when it is
 inside it, `-` when the endpoint has no threshold — advisory
-only, the endpoint stays UP and no webhook fires), a sparkline
+only, the endpoint stays UP), a sparkline
 of the last 20 recorded latencies, a Retries column (retries spent
 on the most recent recorded check — `1` when a first-attempt
 failure recovered on the retry, `0` when the first attempt decided
@@ -858,9 +888,12 @@ last 24 hours, or `null` when no checks ran in that window),
 `latency_p95_threshold_ms` (the p95 threshold in ms the
 endpoint's windowed p95 must stay within, or `null` when it has
 none) and `latency_p95_alert` (`true` when that p95 exceeds the
-threshold — advisory only, the endpoint stays UP and no webhook
-fires — `false` when it has no threshold, no recorded latencies,
-or the p95 is inside the threshold),
+threshold — advisory only, the endpoint stays UP — `false` when
+it has no threshold, no recorded latencies, or the p95 is inside
+the threshold) and `latency_p95_alerted_at` (the epoch second the
+p95 breach alert fired for the current crossing, or `null` when
+it has not fired or the p95 has since fallen back below its
+threshold),
 `last_error` (the error string of the most recent failed check
 that actually ran, or `null` when the endpoint never failed —
 skipped and maintenance rounds do not count, and it stays after
@@ -1663,16 +1696,39 @@ make test   # python3 -m unittest discover -s tests -v
 - [x] Per-endpoint p95 latency alerts: an endpoint can declare a
   `latency_p95_threshold_ms`, and when the windowed p95 over the
   last 24 hours crosses it the endpoint is in a latency-alert
-  state — advisory only, it stays UP and no webhook fires. Set
-  in the config file or with `--latency-p95-threshold NAME=MS`
-  (repeatable, flag wins), validated at load and on SIGHUP
-  reload; the dashboard gains a Latency p95 alert column and
-  `GET /api/status` gains `latency_p95_threshold_ms` /
-  `latency_p95_alert` per endpoint, both from the same shared
-  `endpoint_latency_p95_alert` helper, so they can never
-  disagree — done in 0.68.0.
+  state — advisory only, it stays UP. Set in the config file or
+  with `--latency-p95-threshold NAME=MS` (repeatable, flag wins),
+  validated at load and on SIGHUP reload; the dashboard gains a
+  Latency p95 alert column and `GET /api/status` gains
+  `latency_p95_threshold_ms` / `latency_p95_alert` per endpoint,
+  both from the same shared `endpoint_latency_p95_alert` helper,
+  so they can never disagree — done in 0.68.0. One webhook alert
+  per crossing (a sustained breach pages exactly once, and a p95
+  that falls back below the threshold re-arms) arrived in
+  0.69.0, with `latency_p95_alerted_at` in `GET /api/status`
+  and the alert time appended in the dashboard column.
 
 ## Changelog
+
+- **0.69.0** — Webhook alert when the p95 crosses its threshold:
+  `LatencyP95Alerter` fires one POST per crossing — a
+  `latency_p95_breach` payload (endpoint, p95, threshold, the
+  24-hour window, the most recent check time) to the endpoint's
+  own `webhook` URL when it has one, else the global
+  `webhook_url` — from the same shared
+  `endpoint_latency_p95_alert` helper the dashboard and `GET
+  /api/status` read, so the firing decision can never disagree
+  with what they show. A sustained breach pages exactly once,
+  and a p95 that falls back below its threshold re-arms, so the
+  next crossing fires again; a failed delivery is logged and
+  still recorded as alerted, so it is not re-sent; an endpoint
+  with no webhook anywhere sends nothing and does not consume
+  its crossing. The alert time shows as
+  `latency_p95_alerted_at` in `GET /api/status` and appended to
+  the dashboard's Latency p95 alert column ("ALERT 812.3 > 400
+  ms alerted 12:30"), and a SIGHUP reload does not re-fire an
+  alert sent for an ongoing breach. Next: a Latency p50 / p95 /
+  p99 column on the static status page.
 
 - **0.68.0** — Per-endpoint p95 latency alerts:
   `latency_p95_threshold_ms` declares the p95 latency an

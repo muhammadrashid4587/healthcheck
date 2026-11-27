@@ -24,7 +24,8 @@ import signal
 import threading
 import time
 
-from .alerts import CertExpiryAlerter, SlaBreachAlerter, WebhookAlerter
+from .alerts import (CertExpiryAlerter, LatencyP95Alerter, SlaBreachAlerter,
+                      WebhookAlerter)
 from .checker import (check_endpoint_with_retry, maintenance_result,
                       normalize_headers, normalize_http_method,
                       skipped_result)
@@ -1184,6 +1185,24 @@ def make_sla_alerter(cfg, args, records=None):
     return SlaBreachAlerter(url, routes=routes, records=records)
 
 
+def make_latency_p95_alerter(cfg, args, records=None):
+    """A LatencyP95Alerter for the configured webhook, or None if
+    there is nowhere to send one.
+
+    The same webhook routing as state-change, SLA breach and
+    cert-expiry alerts: the global `webhook_url` (or
+    --webhook-url) plus each endpoint's own `webhook` URL. With
+    no URL anywhere there is no alerter — the breach still shows
+    on the dashboard and in GET /api/status, it just cannot be
+    POSTed anywhere.
+    """
+    url = webhook_url(cfg, args) if args is not None else cfg.get("webhook_url")
+    routes = endpoint_webhooks(cfg)
+    if not url and not routes:
+        return None
+    return LatencyP95Alerter(url, routes=routes, records=records)
+
+
 def flap_threshold(cfg, args):
     """Consecutive failures that confirm an outage, or the default.
 
@@ -1511,7 +1530,8 @@ def dry_run_check(endpoints, name=None, retry=None):
 def monitor_loop(cfg, history, path, args, stop, config_path=None,
                  reload_requested=None, max_rounds=None,
                  live_endpoints=None, live_sources=None, sla_alerts=None,
-                 cert_alerts=None, alert_records=None):
+                 cert_alerts=None, alert_records=None,
+                 latency_p95_alerts=None):
     """Check rounds until `stop` is set; returns the config in effect
     when the loop ends.
 
@@ -1555,7 +1575,14 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
     whose certificate entered its warning window fires one webhook
     alert for that certificate (see `CertExpiryAlerter`), and
     `cert_alerts`, when given, is the shared dict the dashboard
-    server reads to show when each alert fired. `alert_records`,
+    server reads to show when each alert fired. The same round
+    also checks p95 latency: an endpoint whose windowed p95
+    crossed its `latency_p95_threshold_ms` fires one webhook
+    alert for the crossing (see `LatencyP95Alerter`), and
+    `latency_p95_alerts`, when given, is the shared dict the
+    dashboard server reads to show when each alert fired — a
+    p95 that falls back below its threshold re-arms, so the next
+    crossing fires again. `alert_records`,
     when given, is the same for down alerts: the shared dict the
     alerter writes its last-down-alert times into, so the
     dashboard and GET /api/status show when each endpoint last
@@ -1567,6 +1594,8 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
     alerter = make_alerter(cfg, args, records=alert_records)
     cert_alerter = make_cert_alerter(cfg, args, records=cert_alerts)
     sla_alerter = make_sla_alerter(cfg, args, records=sla_alerts)
+    latency_p95_alerter = make_latency_p95_alerter(
+        cfg, args, records=latency_p95_alerts)
     # One detector for the life of a config: the consecutive failure
     # count must survive across rounds.
     detector = FlapDetector(flap_threshold(cfg, args))
@@ -1612,6 +1641,8 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
                         new_cfg, args, records=cert_alerts)
                     sla_alerter = make_sla_alerter(
                         new_cfg, args, records=sla_alerts)
+                    latency_p95_alerter = make_latency_p95_alerter(
+                        new_cfg, args, records=latency_p95_alerts)
                     detector = FlapDetector(flap_threshold(new_cfg, args))
                     state_cfg = new_cfg
                     # New endpoints and new intervals apply from the
@@ -1664,6 +1695,11 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
                 # entered its warning window; a certificate
                 # already alerted for does not re-fire.
                 cert_alerter.maybe_alert(history, endpoints)
+            if latency_p95_alerter is not None:
+                # One webhook per endpoint whose p95 just crossed
+                # its threshold; a sustained breach does not
+                # re-fire, and a recovered p95 re-arms.
+                latency_p95_alerter.maybe_alert(history, endpoints)
             save_history(history, path)
             rounds += 1
             if max_rounds is not None and rounds >= max_rounds:
@@ -1709,6 +1745,10 @@ def run_forever(cfg, host, port, args=None, config_path=None):
     # dashboard server so it can show when each endpoint last
     # paged and how long until it pages again.
     alert_records = {}
+    # P95 latency breach alerts fired for the current crossing,
+    # shared with the dashboard server so it can show when each
+    # alert fired.
+    latency_p95_alerts = {}
     thread = threading.Thread(
         target=monitor_loop,
         args=(cfg, history, path, args, stop),
@@ -1718,7 +1758,8 @@ def run_forever(cfg, host, port, args=None, config_path=None):
                 "live_sources": live_sources,
                 "sla_alerts": sla_alerts,
                 "cert_alerts": cert_alerts,
-                "alert_records": alert_records},
+                "alert_records": alert_records,
+                "latency_p95_alerts": latency_p95_alerts},
         name="checker", daemon=True)
     thread.start()
     log.info("dashboard at http://%s:%d/ — checking %d endpoint(s) every %ds "
@@ -1728,7 +1769,8 @@ def run_forever(cfg, host, port, args=None, config_path=None):
     try:
         serve(history, live_endpoints, host=host, port=port,
               status_page_sources=live_sources, sla_alerts=sla_alerts,
-              cert_alerts=cert_alerts, alert_records=alert_records)
+              cert_alerts=cert_alerts, alert_records=alert_records,
+              latency_p95_alerts=latency_p95_alerts)
     except KeyboardInterrupt:
         stop.set()
     finally:
@@ -1804,7 +1846,9 @@ def main(argv=None):
                              "(overrides the config file's "
                              "latency_p95_threshold_ms for that "
                              "endpoint; repeatable) — advisory only, "
-                             "the endpoint stays UP")
+                             "the endpoint stays UP, and one webhook "
+                             "alert fires per crossing when a webhook "
+                             "is configured")
     parser.add_argument("--check-interval", default=None,
                         action="append", metavar="NAME=SECONDS",
                         help="check the named endpoint every SECONDS "

@@ -11,16 +11,18 @@ dashboard and in GET /api/status. An endpoint whose TLS certificate
 enters its warning window fires one webhook alert for that
 certificate, and the alert shows on the dashboard and in
 GET /api/status too. An endpoint whose p95 latency over the last
-24 hours crosses its `latency_p95_threshold_ms` shows a latency
-alert on the dashboard and in GET /api/status — advisory only,
-it stays UP and fires no webhook.
+24 hours crosses its `latency_p95_threshold_ms` fires one webhook
+alert per crossing, and the alert shows on the dashboard and in
+GET /api/status — advisory only, it stays UP.
 """
 
-__version__ = "0.68.0"
+__version__ = "0.69.0"
 
-from .alerts import (CertExpiryAlerter, SlaBreachAlerter, WebhookAlerter,
-                     alert_payload, cert_expiry_alert_payload,
-                     post_alert, sla_breach_payload)
+from .alerts import (CertExpiryAlerter, LatencyP95Alerter, SlaBreachAlerter,
+                     WebhookAlerter, alert_payload,
+                     cert_expiry_alert_payload,
+                     latency_p95_breach_payload, post_alert,
+                     sla_breach_payload)
 
 from .checker import (ALLOWED_HTTP_METHODS, DEFAULT_CERT_EXPIRY_WARN_DAYS,
                       CheckResult, cert_expiring_soon, cert_expiry_days,
@@ -36,7 +38,8 @@ from .cli import (apply_alert_cooldown_overrides,
                   endpoint_alert_threshold, endpoint_interval,
                   format_check_line, install_reload_handler,
                   load_status_page_source, make_cert_alerter,
-                  make_sla_alerter, merged_status_page_sources, monitor_loop,
+                  make_latency_p95_alerter, make_sla_alerter,
+                  merged_status_page_sources, monitor_loop,
                   parse_alert_cooldown, parse_alert_threshold,
                   parse_check_interval,
                   parse_latency_p95_threshold, parse_max_latency,
@@ -90,6 +93,7 @@ __all__ = [
     "FlapOutcome",
     "DEFAULT_THRESHOLD",
     "History",
+    "LatencyP95Alerter",
     "active_window",
     "apply_alert_cooldown_overrides",
     "apply_alert_threshold_overrides",
@@ -125,8 +129,10 @@ __all__ = [
     "incidents_snapshot",
     "install_reload_handler",
     "load_status_page_source",
+    "latency_p95_breach_payload",
     "maintenance_result",
     "make_cert_alerter",
+    "make_latency_p95_alerter",
     "normalize_headers",
     "normalize_http_method",
     "make_sla_alerter",

@@ -216,7 +216,8 @@ def endpoint_latency_p95_alert(history, ep, now=None):
     }
 
 
-def endpoint_latency_p95_alert_text(history, ep, now=None):
+def endpoint_latency_p95_alert_text(history, ep, now=None,
+                                    latency_p95_alerts=None):
     """The endpoint's p95 latency alert, or "-".
 
     "ALERT 812.3 > 500 ms" when the windowed p95 over the last 24
@@ -225,7 +226,12 @@ def endpoint_latency_p95_alert_text(history, ep, now=None):
     inside it; "500 ms (no data)" when it has a threshold but no
     recorded latencies in the window yet; "-" when it has no
     threshold. From the same `endpoint_latency_p95_alert` the API
-    reads, so the dashboard and the API can never disagree.
+    reads, so the dashboard and the API can never disagree. When
+    `latency_p95_alerts` carries a record for this endpoint and
+    the alert is currently firing, the time its breach alert
+    fired is appended ("ALERT 812.3 > 500 ms alerted 12:30"); a
+    static snapshot carries no alert records, so it shows just
+    the alert.
     """
     state = endpoint_latency_p95_alert(history, ep, now=now)
     threshold = state["threshold_ms"]
@@ -235,7 +241,13 @@ def endpoint_latency_p95_alert_text(history, ep, now=None):
     if p95 is None:
         return f"{threshold:g} ms (no data)"
     if state["alert"]:
-        return f"ALERT {p95:.1f} > {threshold:g} ms"
+        text = f"ALERT {p95:.1f} > {threshold:g} ms"
+        alert = (latency_p95_alerts or {}).get(ep["name"]) or {}
+        alerted = alert.get("alerted_at")
+        if alerted is not None:
+            text += (" alerted " + time.strftime(
+                "%H:%M", time.localtime(alerted)))
+        return text
     return f"p95 {p95:.1f} / {threshold:g} ms"
 
 
@@ -369,7 +381,8 @@ def endpoint_maintenance_text(ep):
 
 def status_snapshot(history, endpoints, now=None,
                     status_page_sources=None, sla_alerts=None,
-                    cert_alerts=None, alert_records=None):
+                    cert_alerts=None, alert_records=None,
+                    latency_p95_alerts=None):
     """Machine-readable status for every endpoint: the same data the
     dashboard renders, as plain JSON-friendly values.
 
@@ -403,7 +416,12 @@ def status_snapshot(history, endpoints, now=None,
     when it has none) and "latency_p95_alert" (True when that p95
     exceeds the threshold — advisory only, the endpoint stays UP;
     False when it has no threshold, no recorded latencies, or the
-    p95 is inside the threshold), "last_error" (the error string of the most
+    p95 is inside the threshold), and "latency_p95_alerted_at"
+    (the epoch second the p95 breach alert fired for the current
+    crossing, or None when it has not fired — a record only
+    counts while the alert is still firing, since a p95 that
+    falls back below its threshold re-arms and drops the
+    record), "last_error" (the error string of the most
     recent failed check that actually ran — skipped and maintenance
     rounds do not count — or None when the endpoint never failed;
     it stays after a later success, so it answers "why did it last
@@ -481,7 +499,12 @@ def status_snapshot(history, endpoints, now=None,
     "cert_expiry_alerted_at" is the epoch second the cert-expiry
     alert fired for the endpoint's current certificate, or None
     when it has not fired — a record for a different (renewed)
-    certificate does not count. When
+    certificate does not count. When `latency_p95_alerts` is
+    given (the shared p95-breach-alert records from the checker
+    loop), "latency_p95_alerted_at" is the epoch second the p95
+    breach alert fired for the current crossing, or None when it
+    has not fired or the p95 has since fallen back below its
+    threshold. When
     `status_page_sources` is given, the merged status page sources
     (the config file's `status_page_sources` plus any
     --status-page-source flags) are listed under that key, as
@@ -546,6 +569,15 @@ def status_snapshot(history, endpoints, now=None,
                 max(0.0, cooldown - (ref - last_alerted_at)), 1)
         else:
             cooldown_remaining = None
+        # The p95 breach alert for the current crossing: only a
+        # record for an alert that is still firing counts — a p95
+        # that fell back below its threshold re-arms, so a stale
+        # record (the alerter is gone, or the breach healed
+        # between rounds) shows no alert time.
+        p95_state = endpoint_latency_p95_alert(history, ep, now=now)
+        p95_alert = (latency_p95_alerts or {}).get(name) or {}
+        p95_alerted_at = (p95_alert.get("alerted_at")
+                          if p95_state["alert"] else None)
         out.append({
             "name": name,
             "status": status,
@@ -580,8 +612,8 @@ def status_snapshot(history, endpoints, now=None,
             "max_latency_ms": ep.get("max_latency_ms"),
             "latency_p95_threshold_ms": ep.get(
                 "latency_p95_threshold_ms"),
-            "latency_p95_alert": endpoint_latency_p95_alert(
-                history, ep, now=now)["alert"],
+            "latency_p95_alert": p95_state["alert"],
+            "latency_p95_alerted_at": p95_alerted_at,
             "latency_percentiles": history.latency_percentiles(name, now=now),
             "last_error": history.last_error(name),
             "check_interval_s": ep.get("check_interval_s"),
@@ -1060,7 +1092,8 @@ def render_recent_incidents(history, endpoints, now=None):
 
 def render_dashboard(history, endpoints, now=None,
                      status_page_sources=None, sla_alerts=None,
-                     cert_alerts=None, alert_records=None):
+                     cert_alerts=None, alert_records=None,
+                     latency_p95_alerts=None):
     """Render the dashboard HTML.
 
     When `status_page_sources` is given and non-empty, a "Status
@@ -1090,7 +1123,11 @@ def render_dashboard(history, endpoints, now=None,
     so a recovered endpoint shows just the configured cooldown.
     When `cert_alerts` carries a record for the
     endpoint's current certificate, the time its expiry alert
-    fired is appended ("5d (soon) alerted 06:12"). The SLA breach column
+    fired is appended ("5d (soon) alerted 06:12"). The Latency p95
+    alert column shows the alert state ("ALERT 812.3 > 500 ms",
+    with the time its breach alert fired appended when
+    `latency_p95_alerts` carries a record for the current
+    crossing), and "p95 210.0 / 500 ms" or "-" otherwise. The SLA breach column
     shows "BREACH -X.Xpp" for an endpoint below its `sla_target`
     in the current calendar month (with the time its breach alert
     fired, when `sla_alerts` carries a record for it), and "-"
@@ -1161,7 +1198,7 @@ def render_dashboard(history, endpoints, now=None,
         month = f"{up_30d:.1f}%" if up_30d is not None else "-"
         pct_text = latency_percentiles_text(history, name, now=now)
         p95_alert_text = endpoint_latency_p95_alert_text(
-            history, ep, now=now)
+            history, ep, now=now, latency_p95_alerts=latency_p95_alerts)
         budget_text = endpoint_latency_budget_text(ep)
         interval_text = endpoint_check_interval_text(ep)
         retries_text = endpoint_retries_text(cur)
@@ -1287,7 +1324,8 @@ def render_dashboard(history, endpoints, now=None,
 
 
 def make_handler(history, endpoints, status_page_sources=None,
-                 sla_alerts=None, cert_alerts=None, alert_records=None):
+                 sla_alerts=None, cert_alerts=None, alert_records=None,
+                 latency_p95_alerts=None):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path == "/api/status":
@@ -1296,7 +1334,8 @@ def make_handler(history, endpoints, status_page_sources=None,
                                     status_page_sources=status_page_sources,
                                     sla_alerts=sla_alerts,
                                     cert_alerts=cert_alerts,
-                                    alert_records=alert_records)
+                                    alert_records=alert_records,
+                                    latency_p95_alerts=latency_p95_alerts)
                 ).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -1413,7 +1452,8 @@ def make_handler(history, endpoints, status_page_sources=None,
                 status_page_sources=status_page_sources,
                 sla_alerts=sla_alerts,
                 cert_alerts=cert_alerts,
-                alert_records=alert_records).encode("utf-8")
+                alert_records=alert_records,
+                latency_p95_alerts=latency_p95_alerts).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(page)))
@@ -1428,7 +1468,7 @@ def make_handler(history, endpoints, status_page_sources=None,
 
 def serve(history, endpoints, host="127.0.0.1", port=8080,
           status_page_sources=None, sla_alerts=None, cert_alerts=None,
-          alert_records=None):
+          alert_records=None, latency_p95_alerts=None):
     """Serve the dashboard forever (Ctrl-C to stop).
 
     `status_page_sources` is the merged list of status page sources
@@ -1443,6 +1483,9 @@ def serve(history, endpoints, host="127.0.0.1", port=8080,
     shared dict of down-alert records from the checker loop, so
     the dashboard and GET /api/status show when each endpoint
     last paged and how long until it pages again.
+    `latency_p95_alerts` is the shared dict of p95-breach-alert
+    records from the checker loop, so the dashboard and GET
+    /api/status show when each p95 alert fired.
     """
     server = ThreadingHTTPServer(
         (host, port),
@@ -1450,5 +1493,6 @@ def serve(history, endpoints, host="127.0.0.1", port=8080,
                      status_page_sources=status_page_sources,
                      sla_alerts=sla_alerts,
                      cert_alerts=cert_alerts,
-                     alert_records=alert_records))
+                     alert_records=alert_records,
+                     latency_p95_alerts=latency_p95_alerts))
     server.serve_forever()

@@ -15,6 +15,7 @@ import urllib.request
 
 from .checker import (DEFAULT_CERT_EXPIRY_WARN_DAYS, cert_expiring_soon,
                       cert_expiry_days)
+from .server import endpoint_latency_p95_alert
 from .sla import breaches, sla_report
 
 log = logging.getLogger("healthcheck.alerts")
@@ -440,6 +441,133 @@ class SlaBreachAlerter:
                 "month": month_str,
                 "shortfall_pct": row["shortfall_pct"],
                 "alerted_at": time.time() if now is None else now,
+            }
+            sent.append(payload)
+        return sent
+
+
+def latency_p95_breach_payload(name, p95_ms, threshold_ms, checked_at):
+    """JSON payload for a p95 latency breach: an endpoint whose
+    windowed p95 crossed its `latency_p95_threshold_ms`.
+
+    The payload carries the p95 that crossed, the threshold it
+    crossed, and the window it was measured over (24 hours — the
+    same window the dashboard's percentiles column reads), plus
+    the time of the most recent check that fed the window, so the
+    receiver can judge the slowdown without fetching the status
+    again.
+    """
+    return {
+        "type": "latency_p95_breach",
+        "endpoint": name,
+        "p95_ms": p95_ms,
+        "threshold_ms": threshold_ms,
+        "window_hours": 24,
+        "checked_at": checked_at,
+    }
+
+
+class LatencyP95Alerter:
+    """Fires a webhook alert when an endpoint's p95 latency crosses
+    its threshold.
+
+    Built on the same `endpoint_latency_p95_alert` the dashboard
+    and GET /api/status read: an endpoint with a
+    `latency_p95_threshold_ms` whose windowed p95 over the last
+    24 hours exceeds it gets one webhook POST with the breach
+    details (see `latency_p95_breach_payload`). The alert goes to
+    the endpoint's own `webhook` URL when it has one, else the
+    global `webhook_url` — the same routing as state-change, SLA
+    breach and cert-expiry alerts — and an endpoint with no URL
+    anywhere sends nothing. The endpoint stays UP: the alert is
+    advisory, it never touches the flap detector or the
+    state-change alerter.
+
+    One alert per crossing: the first round that finds the p95
+    above the threshold fires, and later rounds while the p95
+    stays above it do not re-fire — the dashboard and GET
+    /api/status keep showing the live p95, so a worsening
+    slowdown stays visible there. When the p95 falls back below
+    the threshold the alert re-arms, so the next crossing fires
+    again. A failed delivery is logged by `post_alert` and never
+    stops the monitor, and the breach is still recorded as
+    alerted — like the SLA breach alerter, a failed alert is not
+    re-sent.
+
+    `records`, when given, is a dict the alerter writes into:
+    `records[name] = {"p95_ms", "threshold_ms", "alerted_at"}`
+    for each breach alerted. The dashboard server reads the same
+    dict (passed through `run_forever`) to show when each alert
+    fired; without it the record lives only on the alerter.
+    """
+
+    def __init__(self, url, timeout=5.0, routes=None, records=None):
+        self.url = url
+        self.timeout = timeout
+        self.routes = dict(routes) if routes else {}
+        self.records = records if records is not None else {}
+        # Endpoints already alerted for a breach that has not
+        # re-armed — seeded from the shared records, so a SIGHUP
+        # reload (which recreates this alerter) does not re-fire
+        # an alert sent for an ongoing breach.
+        self._alerted = {
+            name for name, rec in self.records.items()
+            if isinstance(rec, dict) and "alerted_at" in rec
+        }
+
+    def url_for(self, name):
+        """The webhook URL a p95 breach alert for `name` goes to."""
+        return self.routes.get(name) or self.url
+
+    def alerted_for(self, name):
+        """The alert record for `name`, or None when it never fired
+        (or re-armed since)."""
+        return self.records.get(name)
+
+    def maybe_alert(self, history, endpoints, now=None):
+        """Alert on every endpoint whose p95 just crossed its
+        threshold.
+
+        Returns the list of payloads sent (attempted — a failed
+        delivery still counts as sent, see the class docs), in
+        config order. `now` pins the alerted_at timestamp in
+        tests; it defaults to the current time. An endpoint with
+        no threshold, or no recorded latencies in the window,
+        never fires — no data is not a slowdown — and an endpoint
+        whose p95 fell back below its threshold re-arms silently:
+        the record is dropped, so the next crossing fires again.
+        """
+        ref = time.time() if now is None else now
+        sent = []
+        for ep in endpoints:
+            name = ep["name"]
+            state = endpoint_latency_p95_alert(history, ep, now=ref)
+            if not state["alert"]:
+                # Below the threshold (or no threshold / no data):
+                # re-arm, so the next crossing fires again.
+                self._alerted.discard(name)
+                self.records.pop(name, None)
+                continue
+            if name in self._alerted:
+                # Already alerted for this crossing: a sustained
+                # breach pages exactly once.
+                continue
+            url = self.url_for(name)
+            if url is None:
+                continue
+            current = history.current(name)
+            payload = latency_p95_breach_payload(
+                name, state["p95_ms"], state["threshold_ms"],
+                current["checked_at"] if current is not None else ref)
+            if post_alert(url, payload, timeout=self.timeout):
+                log.info("p95 latency alert sent for %s: p95 %.1f ms "
+                         "above threshold %.1f ms",
+                         name, state["p95_ms"], state["threshold_ms"])
+            self._alerted.add(name)
+            self.records[name] = {
+                "p95_ms": state["p95_ms"],
+                "threshold_ms": state["threshold_ms"],
+                "alerted_at": ref,
             }
             sent.append(payload)
         return sent
