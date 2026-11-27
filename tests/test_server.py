@@ -338,6 +338,47 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(
             snap["endpoints"][0]["windows"]["30d"]["uptime_pct"], 66.7)
 
+    def test_dashboard_shows_downtime_30d_column(self):
+        # The live dashboard carries a Downtime 30d column right
+        # after Uptime 30d — total outage time inside the last 30
+        # days, from the same `endpoint_downtime_text` the static
+        # status page reads, so the two pages can never disagree:
+        # "11m 0s" for api (a 60-second outage 20 days ago plus a
+        # 10-minute outage an hour ago), "-" for web (never down),
+        # old (its only outage was 40 days ago, outside the
+        # window), and ghost (never checked).
+        import time
+        now = time.time()
+        hist = History()
+        hist.record(_result("api", True, at=now - 20 * 86400))
+        hist.record(_result("api", False, at=now - 20 * 86400 + 60))
+        hist.record(_result("api", True, at=now - 20 * 86400 + 120))
+        hist.record(_result("api", True, at=now - 3600))
+        hist.record(_result("api", False, at=now - 1800))
+        hist.record(_result("api", True, at=now - 1200))
+        hist.record(_result("web", True, at=now))
+        hist.record(_result("old", False, at=now - 40 * 86400))
+        hist.record(_result("old", True, at=now - 40 * 86400 + 60))
+        endpoints = [
+            {"name": "api", "type": "http",
+             "url": "http://api.example.com"},
+            {"name": "web", "type": "http",
+             "url": "http://example.com"},
+            {"name": "old", "type": "http",
+             "url": "http://old.example.com"},
+            {"name": "ghost", "type": "http",
+             "url": "http://ghost.example.com"},
+        ]
+        page = render_dashboard(hist, endpoints, now=now + 200)
+        self.assertIn(
+            "<th>Uptime 30d</th><th>Downtime 30d</th><th>Latency</th>",
+            page)
+        self.assertIn("<td>11m 0s</td>", page)
+        self.assertEqual(page.count("11m 0s"), 1)
+        # web, old and ghost recorded no downtime in the window,
+        # so their Downtime cells are "-"; api's is the only
+        # duration on the page.
+
     def test_dashboard_windowed_uptime_dash_when_no_recent_checks(self):
         # Checks are from 2023, long outside both windows: dashes.
         page = render_dashboard(self.history, self.endpoints)

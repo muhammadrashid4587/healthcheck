@@ -990,7 +990,11 @@ def render_dashboard(history, endpoints, now=None,
     5). With no incidents recorded anywhere the section is omitted.
     The Uptime 30d column comes from the same `uptime_snapshot`
     the API and the text report use, so the dashboard can never
-    disagree with them about a window.
+    disagree with them about a window. The Downtime 30d column
+    right after it is the total outage time inside the last 30
+    days ("1h 23m", "-" when the endpoint recorded no downtime in
+    the window), from the same `endpoint_downtime_text` the static
+    status page reads, so the two pages can never disagree.
     """
     uptime_snap = {row["name"]: row for row in uptime_snapshot(
         history, endpoints, now=now)["endpoints"]}
@@ -1105,6 +1109,14 @@ def render_dashboard(history, endpoints, now=None,
         cert_text = endpoint_cert_expiry_text(
             history, name, ep, now=ref,
             cert_alert=(cert_alerts or {}).get(name) or None)
+        # Downtime in the last 30 days, right after Uptime 30d —
+        # the same `endpoint_downtime_text` the static status page
+        # reads, so the two pages can never disagree: total outage
+        # time inside the window ("1h 23m", "-" when the endpoint
+        # recorded no downtime there), from the same
+        # `History.downtime_seconds_window` the API reports as
+        # `downtime_30d_seconds`.
+        downtime_text = endpoint_downtime_text(history, name, now=now)
         rows.append(
             f"<tr><td>{html.escape(name)}</td>"
             f"<td class=\"{cls}\">{status}</td>"
@@ -1118,7 +1130,7 @@ def render_dashboard(history, endpoints, now=None,
             f"<td>{html.escape(cert_text)}</td>"
             f"<td>{html.escape(depends_on)}</td>"
             f"<td>{html.escape(windows)}</td>"
-            f"<td>{up}</td><td>{day}</td><td>{week}</td><td>{month}</td><td>{latency}</td>"
+            f"<td>{up}</td><td>{day}</td><td>{week}</td><td>{month}</td><td>{downtime_text}</td><td>{latency}</td>"
             f"<td>{budget_text}</td>"
             f"<td>{interval_text}</td>"
             f"<td>{retries_text}</td>"
@@ -1142,7 +1154,7 @@ def render_dashboard(history, endpoints, now=None,
 <html><head><meta charset="utf-8"><title>healthcheck</title>
 <style>body{{font-family:sans-serif;max-width:720px;margin:2em auto}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccc;padding:6px 10px;text-align:left}}.up{{color:green;font-weight:bold}}.down{{color:red;font-weight:bold}}.skipped{{color:#b8860b;font-weight:bold}}.maintenance{{color:#6a5acd;font-weight:bold}}</style>
 </head><body><h1>healthcheck</h1>
-<table><tr><th>Endpoint</th><th>Status</th><th>Down since</th><th>Fail streak</th><th>Alert at</th><th>Cooldown</th><th>Method</th><th>Headers</th><th>HTTP status</th><th>Cert expires</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Uptime 30d</th><th>Latency</th><th>Latency budget</th><th>Check every</th><th>Retries</th><th>Latency p50 / p95 / p99</th><th>Latency history</th><th>Last error</th><th>SLA breach</th><th>Last check</th></tr>
+<table><tr><th>Endpoint</th><th>Status</th><th>Down since</th><th>Fail streak</th><th>Alert at</th><th>Cooldown</th><th>Method</th><th>Headers</th><th>HTTP status</th><th>Cert expires</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Uptime 30d</th><th>Downtime 30d</th><th>Latency</th><th>Latency budget</th><th>Check every</th><th>Retries</th><th>Latency p50 / p95 / p99</th><th>Latency history</th><th>Last error</th><th>SLA breach</th><th>Last check</th></tr>
 {body}</table>
 {incidents_html}{sources_html}<p>Rendered {time.strftime('%Y-%m-%d %H:%M:%S')} — reload to update.</p></body></html>"""
 

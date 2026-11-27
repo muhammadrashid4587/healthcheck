@@ -739,7 +739,9 @@ e.g. "5d (soon) alerted 06:12"),
 the endpoint it depends on (or `-`), its maintenance windows (or `-`), uptime % over the
 recorded history, uptime %
 over the last 24 hours, the last 7 days, and the last 30 days (a `-` when no checks fall
-in that window — no data is not downtime), most recent
+in that window — no data is not downtime), total downtime in the
+last 30 days (the Downtime 30d column — `1h 23m`, `-` when the
+endpoint recorded no downtime in the window), most recent
 latency, the endpoint's latency budget (`max_latency_ms`, or `-`
 when it has none), the endpoint's own check interval
 (`check_interval_s`, or `-` when it uses the global interval),
@@ -1573,8 +1575,27 @@ make test   # python3 -m unittest discover -s tests -v
   generated time; a remote source shows `-`, since its snapshot
   carries no per-check records, while a file source shows its
   recorded downtime, like a local one — done in 0.64.0.
+- [x] Downtime column on the live dashboard: the dashboard gains
+  the same Downtime 30d column the static status page shows,
+  right after Uptime 30d — total outage time inside the last 30
+  days (`1h 23m`, `-` when the endpoint recorded no downtime in
+  the window), from the same shared `endpoint_downtime_text`
+  helper in server.py the page reads, so the two can never
+  disagree. An outage that started before the window only counts
+  the part inside it, and an ongoing outage accrues to the page's
+  render time — done in 0.65.0.
 
 ## Changelog
+
+- **0.65.0** — Downtime column on the live dashboard: the dashboard
+  gains the same Downtime 30d column the static status page shows,
+  right after Uptime 30d — total outage time inside the last 30
+  days (`1h 23m`, `-` when the endpoint recorded no downtime in
+  the window), from the same shared `endpoint_downtime_text`
+  helper in server.py the page reads, so the two can never
+  disagree. An outage that started before the window only counts
+  the part inside it, and an ongoing outage accrues to the page's
+  render time.
 
 - **0.64.0** — Downtime column on the static status page: the
   `--status-page` output gains a Downtime 30d column right after
