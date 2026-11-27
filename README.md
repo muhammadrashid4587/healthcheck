@@ -114,7 +114,9 @@ endpoint, and serves a small status dashboard over `http.server`.
   renders the same view as the dashboard — current status, how long
   the current outage has lasted, uptime
   24h/7d/30d, latency sparkline, and the Alert at / Cooldown
-  columns next to the Fail streak — plus a recent-incidents list per
+  columns next to the Fail streak, plus the Method, Headers, HTTP
+  status, and Cert expires columns after the Cooldown column — plus
+  a recent-incidents list per
   endpoint, as one self-contained HTML file with no external
   references, so it can be hosted anywhere with no server. It is a
   snapshot of the persisted history; regenerate it to update it.
@@ -129,6 +131,19 @@ endpoint, and serves a small status dashboard over `http.server`.
   first failed check in the current run of failures (unconfirmed
   failures included) to the page's generated time, `-` when the
   endpoint is not DOWN.
+  The Method column is the HTTP method the endpoint is checked
+  with (`-` when it uses the default GET, and for TCP endpoints);
+  Headers lists the names of the extra request headers the check
+  sends, never the values (`-` when it sends none); HTTP status is
+  `expected 204, got 200` when the endpoint asserts on a code, the
+  bare actual code when it does not, `-` when no status was ever
+  returned; Cert expires is whole days until the TLS certificate
+  expires (`89d`, `12d (soon)` inside the warning window,
+  `expired` once it has lapsed, `-` when no certificate was ever
+  seen). All four come from the same helpers the dashboard reads,
+  so the two pages can never disagree; a snapshot carries no alert
+  records, so unlike the live dashboard the page does not append
+  the time a cert-expiry alert fired.
   Combine with `--once` to check first, then render.
   `--status-page-source LABEL=PATH` (repeatable) merges another
   healthcheck instance's persisted history into the same page under
@@ -144,7 +159,11 @@ endpoint, and serves a small status dashboard over `http.server`.
   visible while the monitor runs. The remote section shows the remote instance's
   status and uptime figures (all-time, 24h, 7d) as reported; a
   snapshot carries no per-check records, so there is no latency
-  sparkline and no incident list for a remote source, and an
+  sparkline and no incident list for a remote source, and the
+  Method, Headers, HTTP status, and Cert expires columns all show
+  `-` there (a file source still shows its recorded HTTP status
+  and cert expiry, but `-` for Method and Headers, since a history
+  file carries no endpoint config), and an
   unreachable instance (or bad JSON) logs a warning and renders
   empty rather than failing the page.
   An endpoint whose dependency is not up shows SKIPPED, with the
@@ -1426,10 +1445,41 @@ make test   # python3 -m unittest discover -s tests -v
   never disagree. A still-UP endpoint with failures below the
   flap threshold shows `-`, like the dashboard — its run is
   visible in the Fail streak instead — done in 0.57.0.
+- [x] Cert expires, Method, Headers, and HTTP status columns on
+  the static status page: the `--status-page` output gains the
+  same four columns the dashboard shows, right after the Cooldown
+  column and in the same order — the method the endpoint is
+  checked with (`-` for the default GET and for TCP endpoints),
+  the names of the extra request headers it sends (never the
+  values, `-` when it sends none), the expected vs actual HTTP
+  status (`-` when no status was ever returned), and whole days
+  until the TLS certificate expires (`89d`, `12d (soon)` inside
+  the warning window, `expired` once it has lapsed, `-` when no
+  certificate was ever seen). The four computations moved into
+  shared helpers the dashboard reads too, so the two pages can
+  never disagree; a snapshot carries no alert records, so the
+  page does not append the time a cert-expiry alert fired, and
+  a remote source shows `-` for all four — done in 0.58.0.
 
 ## Changelog
 
-- **0.57.0** — Down since column on the static status page: the
+- **0.58.0** — Cert expires, Method, Headers, and HTTP status
+  columns on the static status page: the `--status-page` output
+  gains the same four columns the dashboard has, right after the
+  Cooldown column and in the same order — the method the endpoint
+  is checked with (`-` for the default GET and for TCP endpoints),
+  the names of the extra request headers it sends (never the
+  values, `-` when it sends none), the expected vs actual HTTP
+  status (`expected 204, got 200` when the endpoint asserts on a
+  code, the bare actual code when it does not, `-` when no status
+  was ever returned), and whole days until the TLS certificate
+  expires (`89d`, `12d (soon)` inside the warning window,
+  `expired` once it has lapsed, `-` when no certificate was ever
+  seen). The four computations moved into shared helpers the
+  dashboard reads too, so the two surfaces can never disagree. A
+  snapshot carries no alert records, so the page does not append
+  the time a cert-expiry alert fired, and a remote source shows
+  `-` for all four columns.
   `--status-page` output gains the same Down since column the
   dashboard has, right after Status and before the Fail streak —
   how long the current outage has lasted ("12m 34s", `-` when

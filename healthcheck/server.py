@@ -91,6 +91,88 @@ def format_duration(seconds):
     return f"{secs}s"
 
 
+def endpoint_method_text(ep):
+    """The HTTP method the endpoint is checked with, or "-".
+
+    The configured method (HEAD, POST, ...) when the endpoint sets
+    one; "-" when it uses the default GET — TCP endpoints show "-"
+    too, since they have no method at all. Shared by the dashboard
+    and the static status page, so the two can never disagree.
+    """
+    return ep.get("method") or "-"
+
+
+def endpoint_headers_text(ep):
+    """The names of the extra request headers the check sends, or "-".
+
+    Sorted and comma-separated ("Authorization, X-Api-Key"); "-" when
+    the endpoint sends none. Only the names are ever shown — a header
+    value is often a secret, so it never leaves the config file.
+    Shared by the dashboard and the static status page.
+    """
+    headers = ep.get("headers")
+    return ", ".join(sorted(headers)) if headers else "-"
+
+
+def endpoint_http_status_text(ep, cur):
+    """Expected vs actual HTTP status for an endpoint, or "-".
+
+    "expected 204, got 200" when the endpoint asserts on a code, the
+    bare actual code when it does not, "-" when no status was ever
+    returned — TCP endpoints, never-checked, skipped, maintenance.
+    `cur` is the endpoint's most recent recorded check, or None.
+    Shared by the dashboard and the static status page.
+    """
+    expected = ep.get("expect_status")
+    actual = cur.get("status_code") if cur is not None else None
+    if expected is None and actual is None:
+        return "-"
+    if expected is None:
+        return str(actual)
+    return (f"expected {expected}, got "
+            f"{actual if actual is not None else '-'}")
+
+
+def endpoint_cert_expiry_text(history, name, ep, now=None,
+                              cert_alert=None):
+    """When the endpoint's TLS certificate expires, or "-".
+
+    Whole days left ("89d", "12d (soon)" inside the endpoint's
+    `cert_expiry_warn_days` window, "expired" once it has lapsed),
+    "-" when no certificate was ever seen — plain http / tcp,
+    never-checked, or a check that could not read the peer
+    certificate. `cert_alert` is the alert record for the
+    endpoint's current certificate, when the caller has one: when
+    it fired for this certificate, the time is appended
+    ("5d (soon) alerted 06:12"); a record for a different
+    (renewed) certificate does not count. The static status page
+    passes none — a snapshot carries no alert records — so it
+    shows just the days, like the dashboard shows once the
+    endpoint has recovered. Shared by the dashboard and the
+    static status page, so the two can never disagree.
+    """
+    expires_at = history.cert_expiry(name)
+    if expires_at is None:
+        return "-"
+    warn_days = ep.get("cert_expiry_warn_days")
+    if warn_days is None:
+        warn_days = DEFAULT_CERT_EXPIRY_WARN_DAYS
+    days = cert_expiry_days(expires_at, now=now)
+    if days < 0:
+        text = "expired"
+    elif cert_expiring_soon(expires_at, warn_days, now=now):
+        text = f"{days}d (soon)"
+    else:
+        text = f"{days}d"
+    if cert_alert is not None \
+            and cert_alert.get("cert_expires_at") == expires_at:
+        alerted = cert_alert.get("alerted_at")
+        if alerted is not None:
+            text += (" alerted " + time.strftime(
+                "%H:%M", time.localtime(alerted)))
+    return text
+
+
 def status_snapshot(history, endpoints, now=None,
                     status_page_sources=None, sla_alerts=None,
                     cert_alerts=None, alert_records=None):
@@ -816,25 +898,8 @@ def render_dashboard(history, endpoints, now=None,
         cls = ("up" if status == "UP" else "down" if status == "DOWN"
                else "skipped" if status == "SKIPPED"
                else "maintenance" if status == "MAINTENANCE" else "")
-        # Expected vs actual HTTP status: "expected 204, got 200"
-        # when the endpoint asserts on a code, the bare actual code
-        # when it does not, "-" when no status was ever returned
-        # (TCP endpoints, never-checked, skipped, maintenance).
-        # Request headers: the names the check sends, never the
-        # values — a header value is often a secret, so only the
-        # names are shown (and in GET /api/status, only the names
-        # are listed there too).
-        headers = ep.get("headers")
-        headers_text = (", ".join(sorted(headers)) if headers else "-")
-        expected = ep.get("expect_status")
-        actual = cur.get("status_code") if cur is not None else None
-        if expected is None and actual is None:
-            http_status = "-"
-        elif expected is None:
-            http_status = str(actual)
-        else:
-            http_status = (f"expected {expected}, got "
-                           f"{actual if actual is not None else '-'}")
+        headers_text = endpoint_headers_text(ep)
+        http_status = endpoint_http_status_text(ep, cur)
         # SLA breach this month: the shortfall, and when the breach
         # alert fired — the same numbers as the SLA report, so the
         # dashboard and the report can never disagree.
@@ -896,35 +961,17 @@ def render_dashboard(history, endpoints, now=None,
                         f"{format_duration(remaining)})")
                 else:
                     cooldown_text += " (re-alert due)"
-        # When the endpoint's TLS certificate expires: whole days
+        # When the endpoint's TLS certificate expires — whole days
         # left, "expired" once it has lapsed, "(soon)" inside the
-        # endpoint's warning window (30 days by default), "-" when
-        # no certificate was ever seen (plain http / tcp, never
-        # checked, or a check that could not read the peer cert).
-        expires_at = history.cert_expiry(name)
-        warn_days = ep.get("cert_expiry_warn_days")
-        if warn_days is None:
-            warn_days = DEFAULT_CERT_EXPIRY_WARN_DAYS
-        if expires_at is None:
-            cert_text = "-"
-        else:
-            days = cert_expiry_days(expires_at, now=ref)
-            if days < 0:
-                cert_text = "expired"
-            elif cert_expiring_soon(expires_at, warn_days, now=ref):
-                cert_text = f"{days}d (soon)"
-            else:
-                cert_text = f"{days}d"
-            # When the expiry alert fired for this certificate,
-            # say when — like the SLA breach column says when its
-            # alert fired. A record for a different (renewed)
-            # certificate does not count.
-            cert_alert = (cert_alerts or {}).get(name) or {}
-            if cert_alert.get("cert_expires_at") == expires_at:
-                alerted = cert_alert.get("alerted_at")
-                if alerted is not None:
-                    cert_text += (" alerted " + time.strftime(
-                        "%H:%M", time.localtime(alerted)))
+        # endpoint's warning window — from the same helper the
+        # static status page reads, so the two can never disagree.
+        # The alert record is passed so the time the expiry alert
+        # fired is appended when one went out for the current
+        # certificate; a record for a different (renewed)
+        # certificate does not count.
+        cert_text = endpoint_cert_expiry_text(
+            history, name, ep, now=ref,
+            cert_alert=(cert_alerts or {}).get(name) or None)
         rows.append(
             f"<tr><td>{html.escape(name)}</td>"
             f"<td class=\"{cls}\">{status}</td>"
@@ -932,7 +979,7 @@ def render_dashboard(history, endpoints, now=None,
             f"<td>{html.escape(streak_text)}</td>"
             f"<td>{html.escape(alert_text)}</td>"
             f"<td>{html.escape(cooldown_text)}</td>"
-            f"<td>{html.escape(ep.get('method') or '-')}</td>"
+            f"<td>{html.escape(endpoint_method_text(ep))}</td>"
             f"<td>{html.escape(headers_text)}</td>"
             f"<td>{html.escape(http_status)}</td>"
             f"<td>{html.escape(cert_text)}</td>"

@@ -5,10 +5,30 @@ HTML file that can be hosted anywhere with no server.
 current status per endpoint, how long the current outage has
 lasted, uptime all-time / 24h / 7d / 30d, most recent
 latency, an inline latency sparkline, and the Alert at / Cooldown
-columns next to the Fail streak — plus a recent-incidents list
+columns next to the Fail streak, plus the Method, Headers, HTTP
+status and Cert expires columns after the Cooldown column — plus a
+recent-incidents list
 per endpoint, derived from the persisted check history, and each
 endpoint's per-incident duration histogram over those same
-incidents. The Down since column is the same figure the dashboard
+incidents. The Method column is the HTTP method the endpoint is
+checked with ("-" when it uses the default GET, and for TCP
+endpoints); Headers lists the names of the extra request headers
+the check sends, never the values ("-" when it sends none); HTTP
+status is "expected 204, got 200" when the endpoint asserts on a
+code, the bare actual code when it does not, "-" when no status
+was ever returned; Cert expires is whole days until the TLS
+certificate expires ("89d", "12d (soon)" inside the warning
+window, "expired" once it has lapsed, "-" when no certificate was
+ever seen). All four come from the same helpers the dashboard
+reads — `endpoint_method_text`, `endpoint_headers_text`,
+`endpoint_http_status_text`, `endpoint_cert_expiry_text` — so the
+two pages can never disagree. A static snapshot carries no alert
+records, so unlike the live dashboard the page does not append
+the time a cert-expiry alert fired. An extra source's endpoints
+carry no config, so they show "-" for Method and Headers; a file
+source still shows real HTTP status and Cert expires from its
+recorded checks, while a remote source shows "-" for those too —
+a snapshot carries no per-check records. The Down since column is the same figure the dashboard
 shows, from the same `History.down_since()` — the duration from
 the first failed check in the current run of failures (unconfirmed
 failures included) to the page's generated time, "-" when the
@@ -35,7 +55,9 @@ import os
 import time
 
 from .flap import DEFAULT_THRESHOLD
-from .server import format_duration, latency_sparkline
+from .server import (endpoint_cert_expiry_text, endpoint_headers_text,
+                     endpoint_http_status_text, endpoint_method_text,
+                     format_duration, latency_sparkline)
 
 # How many recent incidents to list per endpoint.
 DEFAULT_INCIDENT_LIMIT = 5
@@ -167,6 +189,29 @@ def _render_source(history, endpoints, generated, label=None):
             alert_at = DEFAULT_THRESHOLD
         cooldown = ep.get("alert_cooldown_s")
         cooldown_text = f"{cooldown:g} s" if cooldown is not None else "-"
+        # Method / Headers / HTTP status / Cert expires, right
+        # after the Cooldown column, exactly as the dashboard
+        # shows them — from the same helpers the dashboard reads,
+        # so the two pages can never disagree. Method is "-" when
+        # the endpoint uses the default GET (and for TCP
+        # endpoints, which have no method); Headers lists only
+        # the header names, never the values ("-" when it sends
+        # none); HTTP status is "-" when no status was ever
+        # returned; Cert expires is "-" when no certificate was
+        # ever seen (plain http / tcp, never-checked, or a check
+        # that could not read the peer certificate). A static
+        # snapshot carries no cert-alert records, so no "alerted"
+        # time is appended, unlike the live dashboard. An extra
+        # source's endpoints carry no config, so they show "-"
+        # for Method and Headers; a file source still shows its
+        # recorded HTTP status and cert expiry, while a remote
+        # source shows "-" for those too — its snapshot carries
+        # no per-check records.
+        method_text = endpoint_method_text(ep)
+        headers_text = endpoint_headers_text(ep)
+        http_status = endpoint_http_status_text(ep, cur)
+        cert_text = endpoint_cert_expiry_text(history, name, ep,
+                                              now=generated)
         rows.append(
             f"<tr><td>{html.escape(name)}</td>"
             f"<td class=\"{cls}\">{status}{status_detail}</td>"
@@ -174,6 +219,10 @@ def _render_source(history, endpoints, generated, label=None):
             f"<td>{history.consecutive_failures(name)}</td>"
             f"<td>{alert_at}</td>"
             f"<td>{cooldown_text}</td>"
+            f"<td>{html.escape(method_text)}</td>"
+            f"<td>{html.escape(headers_text)}</td>"
+            f"<td>{html.escape(http_status)}</td>"
+            f"<td>{html.escape(cert_text)}</td>"
             f"<td>{up}</td><td>{day}</td><td>{week}</td><td>{month}</td><td>{latency}</td>"
             f"<td>{latency_sparkline(history, name)}</td><td>{last}</td></tr>"
         )
@@ -206,7 +255,7 @@ def _render_source(history, endpoints, generated, label=None):
                 f"<h3>{html.escape(name)}</h3><ul>{''.join(items)}</ul>"
                 f"<p>Duration histogram: {buckets}</p>")
     body = "\n".join(rows) or \
-        "<tr><td colspan=\"13\">No endpoints configured.</td></tr>"
+        "<tr><td colspan=\"17\">No endpoints configured.</td></tr>"
     if down_count:
         banner = (f"<p class=\"banner down\">{down_count} endpoint"
                   f"{'s' if down_count != 1 else ''} down</p>")
@@ -218,7 +267,9 @@ def _render_source(history, endpoints, generated, label=None):
     table = (
         "<table><tr><th>Endpoint</th><th>Status</th><th>Down since</th>"
         "<th>Fail streak</th>"
-        "<th>Alert at</th><th>Cooldown</th><th>Uptime</th>"
+        "<th>Alert at</th><th>Cooldown</th>"
+        "<th>Method</th><th>Headers</th><th>HTTP status</th>"
+        "<th>Cert expires</th><th>Uptime</th>"
         "<th>Uptime 24h</th><th>Uptime 7d</th><th>Uptime 30d</th><th>Latency</th>"
         "<th>Latency history</th><th>Last check</th></tr>\n"
         f"{body}</table>")

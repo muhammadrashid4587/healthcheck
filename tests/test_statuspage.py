@@ -293,6 +293,95 @@ class RenderTests(unittest.TestCase):
         self.assertIn("<td class=\"up\">UP</td><td>-</td><td>1</td>",
                       page)
 
+    def test_method_headers_http_status_and_cert_columns(self):
+        # The static page carries the same Method / Headers /
+        # HTTP status / Cert expires columns as the dashboard,
+        # right after the Cooldown column: web is checked with
+        # HEAD, sends two headers, asserts on 204 but got 200,
+        # and its certificate expires 89 days after the page's
+        # generated time; db is a TCP endpoint, so all four are
+        # "-".
+        hist = History()
+        hist.record(_result("web", True, at=BASE, status_code=200,
+                            cert_expires_at=BASE + 200 + 89 * 86400))
+        hist.record(_result("db", True, at=BASE))
+        page = render_status_page(
+            hist,
+            [{"name": "web", "type": "http",
+              "url": "https://example.com", "method": "HEAD",
+              "headers": {"X-Api-Key": "s3cret",
+                          "Authorization": "Bearer x"},
+              "expect_status": 204},
+             {"name": "db", "type": "tcp", "host": "127.0.0.1",
+              "port": 5432}],
+            now=BASE + 200)
+        self.assertIn(
+            "<th>Cooldown</th><th>Method</th><th>Headers</th>"
+            "<th>HTTP status</th><th>Cert expires</th>",
+            page)
+        self.assertIn(
+            "<td>HEAD</td><td>Authorization, X-Api-Key</td>"
+            "<td>expected 204, got 200</td><td>89d</td>",
+            page)
+        # The header values are secrets: only the names appear.
+        self.assertNotIn("s3cret", page)
+        self.assertNotIn("Bearer", page)
+        # db's row: all four columns "-".
+        self.assertIn("<td>-</td><td>-</td><td>-</td><td>-</td>",
+                      page)
+
+    def test_cert_expires_soon_and_expired(self):
+        # Inside the endpoint's warning window the page shows
+        # "(soon)"; once the certificate has lapsed it shows
+        # "expired" — the same figures the dashboard shows.
+        hist = History()
+        hist.record(_result("soon", True, at=BASE,
+                            cert_expires_at=BASE + 200 + 12 * 86400))
+        hist.record(_result("old", True, at=BASE,
+                            cert_expires_at=BASE + 200 - 86400))
+        page = render_status_page(
+            hist,
+            [{"name": "soon", "type": "http",
+              "url": "https://soon.example.com"},
+             {"name": "old", "type": "http",
+              "url": "https://old.example.com"}],
+            now=BASE + 200)
+        self.assertIn("<td>12d (soon)</td>", page)
+        self.assertIn("<td>expired</td>", page)
+
+    def test_http_status_column_without_expectation(self):
+        # Without expect_status the page shows the bare actual
+        # code; a never-checked endpoint shows "-" for all four.
+        hist = History()
+        hist.record(_result("web", True, at=BASE, status_code=200))
+        page = render_status_page(
+            hist,
+            [{"name": "web", "type": "http",
+              "url": "http://example.com"},
+             {"name": "ghost", "type": "http",
+              "url": "http://ghost.example.com"}],
+            now=BASE + 200)
+        self.assertIn("<td>-</td><td>-</td><td>200</td><td>-</td>",
+                      page)
+        self.assertIn("<td>-</td><td>-</td><td>-</td><td>-</td>",
+                      page)
+
+    def test_extra_source_file_keeps_status_and_cert(self):
+        # A file extra source's endpoints carry no config, so
+        # Method and Headers are "-", but HTTP status and Cert
+        # expires come from its recorded checks, like the local
+        # source's.
+        other = History()
+        other.record(_result("web", True, at=BASE, status_code=200,
+                             cert_expires_at=BASE + 200 + 89 * 86400))
+        page = render_status_page(
+            History(), [], now=BASE + 200,
+            extra_sources=[("eu-west", other,
+                            [{"name": "web"}])])
+        self.assertIn("<h2>eu-west</h2>", page)
+        self.assertIn(
+            "<td>-</td><td>-</td><td>200</td><td>89d</td>", page)
+
     def test_empty_endpoints(self):
         page = render_status_page(History(), [], now=BASE)
         self.assertIn("No endpoints configured.", page)
