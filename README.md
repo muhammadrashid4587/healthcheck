@@ -274,6 +274,8 @@ endpoint, and serves a small status dashboard over `http.server`.
   cert is still inside the window do not re-fire, and a renewed
   cert fires again when it enters the window; the alert and when
   it fired show on the dashboard and in `GET /api/status`.
+  `--cert-expiry-alert` fires the same alert once from the
+  command line and exits, for a cron job or a manual check.
 - A JSON API: `GET /api/status` on the dashboard server returns the
   same data as JSON (status, uptime all-time / 24h / 7d, latency,
   last check, recent incidents and their duration histogram,
@@ -555,6 +557,10 @@ normally without it.
   window; a failed delivery is logged and the alert is still
   recorded as fired, so it is not re-sent. The alert and when it
   fired show on the dashboard and in `GET /api/status`.
+  `--cert-expiry-alert` fires the same alerts once from the
+  command line and exits, for a cron job or a manual check (with
+  no webhook configured anywhere, it prints a note and sends
+  nothing).
   The same URL also receives SLA breach alerts: when a month's SLA
   report shows an endpoint below its `sla_target`, one POST goes
   out per endpoint per month with
@@ -1761,16 +1767,53 @@ make test   # python3 -m unittest discover -s tests -v
   again on the next run. With no webhook configured anywhere it
   prints a note and sends nothing, and with no breach it prints
   that too and exits 0 — done in 0.71.0.
-- [ ] `--cert-expiry-alert` one-shot CLI: the same one-shot
+- [x] `--cert-expiry-alert` one-shot CLI: the same one-shot
   shape as `--sla-alert` and `--latency-p95-alert` for the
   certificate-expiry warning — it reads the persisted history
   and fires the `cert_expiry` alert once from the command line
   for every endpoint whose certificate is inside its warning
   window, so a cron job can page on an expiring cert without
-  running the monitor. Today the monitor loop is the only
-  trigger.
+  running the monitor. It reuses the same shared
+  `CertExpiryAlerter` the monitor loop runs, so the firing
+  decision can never disagree with what the dashboard and `GET
+  /api/status` show. One alert per endpoint per run, since a
+  fresh process carries no record of an earlier alert, so a cert
+  still inside its window pages again on the next run. With no
+  webhook configured anywhere it prints a note and sends
+  nothing, and with no cert in its window it prints that too
+  and exits 0 — done in 0.72.0.
+- [ ] `--cert-expiry-report` one-shot text report: print every
+  endpoint's certificate expiry from the persisted history —
+  days left, the warning window, `expired` once it has lapsed,
+  `-` when no certificate was ever seen — from the same shared
+  `cert_expiry_days` / `cert_expiring_soon` helpers the
+  dashboard reads, so the report can never disagree with it.
+  The same shape as `--uptime-report` / `--downtime-report`
+  (with `--cert-expiry-out PATH` to write it to a file), so an
+  operator can see the whole cert estate at a glance without
+  opening the dashboard.
 
 ## Changelog
+
+- **0.72.0** — `--cert-expiry-alert` one-shot CLI: the flag
+  fires the cert-expiry alerts once from the command line and
+  exits, like `--sla-alert` and `--latency-p95-alert` — it
+  reads the persisted history (needs `history_file` in the
+  config, or `--history-file`) and POSTs a `cert_expiry`
+  payload for every endpoint whose certificate is inside its
+  `cert_expiry_warn_days` window right now, to the endpoint's
+  own `webhook` when it has one, else the global `webhook_url`,
+  reusing the same shared `CertExpiryAlerter` the monitor loop
+  runs, so the firing decision can never disagree with what the
+  dashboard and `GET /api/status` show. One alert per endpoint
+  per run, and with no webhook configured anywhere it prints a
+  note and sends nothing. Honest limit: a fresh process carries
+  no record of an earlier alert, so a cert still inside its
+  window pages again on the next run — unlike the monitor loop,
+  which pages once per certificate. Next: a
+  `--cert-expiry-report` one-shot text report of every
+  endpoint's certificate expiry (the roadmap is otherwise
+  exhausted).
 
 - **0.71.0** — `--latency-p95-alert` one-shot CLI: the flag
   fires the p95 breach alerts once from the command line and

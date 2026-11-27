@@ -13,6 +13,7 @@ is not installed.
 """
 
 import json
+import os
 import shutil
 import ssl
 import subprocess
@@ -28,7 +29,7 @@ import healthcheck.alerts as alerts
 from healthcheck.alerts import (CertExpiryAlerter,
                                 cert_expiry_alert_payload)
 from healthcheck.checker import CheckResult
-from healthcheck.cli import make_cert_alerter, monitor_loop
+from healthcheck.cli import main, make_cert_alerter, monitor_loop
 from healthcheck.server import render_dashboard, status_snapshot
 from healthcheck.store import History
 
@@ -445,6 +446,84 @@ class LiveTlsSmokeTests(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+
+class CertExpiryAlertCliTests(unittest.TestCase):
+    _CLI_ENDPOINTS = [
+        {"name": "api", "type": "http", "url": "https://example.com"},
+        {"name": "web", "type": "http", "url": "https://example.com"},
+        {"name": "db", "type": "tcp", "host": "127.0.0.1", "port": 5432},
+    ]
+
+    def _history(self, inside_window=True):
+        # Seeded around the real clock: the one-shot judges the
+        # expiry against now. The api cert expires in 5 days plus
+        # a half hour, so the whole-days count is a stable 5 even
+        # with the seconds between seeding and the run.
+        ref = time.time()
+        expires = (ref + 5 * 86400 + 1800) if inside_window \
+            else ref + 90 * 86400
+        return _history_with_certs(ref, {
+            "api": expires,
+            "web": ref + 90 * 86400,  # outside the 30-day window
+            "db": None,               # tcp: no certificate
+        })
+
+    def _write(self, d, history, webhook_url=None):
+        hist_path = os.path.join(d, "history.json")
+        history.save(hist_path)
+        cfg = {"history_file": hist_path,
+               "endpoints": self._CLI_ENDPOINTS}
+        if webhook_url is not None:
+            cfg["webhook_url"] = webhook_url
+        cfg_path = os.path.join(d, "config.json")
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh)
+        return cfg_path
+
+    def test_cert_expiry_alert_posts_the_warning_and_exits_zero(self):
+        server = _run_capture_server(status=200)
+        try:
+            url = f"http://127.0.0.1:{server.server_port}/hook"
+            with tempfile.TemporaryDirectory() as d:
+                cfg_path = self._write(d, self._history(), url)
+                code = main(["--config", cfg_path,
+                             "--cert-expiry-alert"])
+            self.assertEqual(code, 0)
+            self.assertEqual(len(_CaptureHandler.received), 1)
+            path, content_type, body = _CaptureHandler.received[0]
+            self.assertEqual(path, "/hook")
+            self.assertEqual(content_type, "application/json")
+            payload = json.loads(body)
+            self.assertEqual(payload["type"], "cert_expiry")
+            self.assertEqual(payload["endpoint"], "api")
+            self.assertEqual(payload["days_remaining"], 5)
+            self.assertEqual(payload["warn_days"], 30)
+            self.assertIsNotNone(payload["checked_at"])
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_cert_expiry_alert_with_no_warning_sends_nothing(self):
+        server = _run_capture_server(status=200)
+        try:
+            url = f"http://127.0.0.1:{server.server_port}/hook"
+            with tempfile.TemporaryDirectory() as d:
+                cfg_path = self._write(d, self._history(False), url)
+                self.assertEqual(
+                    main(["--config", cfg_path,
+                          "--cert-expiry-alert"]),
+                    0)
+            self.assertEqual(_CaptureHandler.received, [])
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_cert_expiry_alert_with_no_webhook_sends_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg_path = self._write(d, self._history())
+            self.assertEqual(
+                main(["--config", cfg_path, "--cert-expiry-alert"]), 0)
 
 
 if __name__ == "__main__":

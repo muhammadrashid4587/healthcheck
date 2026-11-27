@@ -1950,6 +1950,14 @@ def main(argv=None):
                              "Needs a webhook URL in the config (or "
                              "--webhook-url) or a per-endpoint webhook "
                              "— with none configured, nothing is sent")
+    parser.add_argument("--cert-expiry-alert", action="store_true",
+                        help="fire a webhook alert for every endpoint "
+                             "whose TLS certificate is inside its "
+                             "cert_expiry_warn_days window and exit (one "
+                             "alert per endpoint per invocation). "
+                             "Needs a webhook URL in the config (or "
+                             "--webhook-url) or a per-endpoint webhook "
+                             "— with none configured, nothing is sent")
     args = parser.parse_args(argv)
     if args.status_page_source and not args.status_page:
         parser.error("--status-page-source needs --status-page")
@@ -2093,6 +2101,23 @@ def main(argv=None):
                       f"{payload['threshold_ms']:.1f} ms")
         else:
             print("No latency p95 breaches to alert on.")
+        return 0
+    if args.cert_expiry_alert:
+        path = history_path(cfg, args)
+        history = load_history(path, maxlen=cfg.get("history", 100))
+        cert_alerter = make_cert_alerter(cfg, args)
+        if cert_alerter is None:
+            print("No webhook configured; no cert expiry alert sent.")
+            return 0
+        sent = cert_alerter.maybe_alert(history, cfg.get("endpoints", []))
+        if sent:
+            for payload in sent:
+                print(f"Cert expiry alert sent for "
+                      f"{payload['endpoint']}: certificate expires in "
+                      f"{payload['days_remaining']} day(s) "
+                      f"(warn window {payload['warn_days']} days)")
+        else:
+            print("No certificates expiring soon to alert on.")
         return 0
     if args.check is not None:
         name = None if args.check == "__all__" else args.check

@@ -16,7 +16,7 @@ alert per crossing, and the alert shows on the dashboard and in
 GET /api/status — advisory only, it stays UP.
 """
 
-__version__ = "0.71.0"
+__version__ = "0.72.0"
 
 from .alerts import (CertExpiryAlerter, LatencyP95Alerter, SlaBreachAlerter,
                      WebhookAlerter, alert_payload,
