@@ -10,10 +10,13 @@ fires one webhook alert for the month, and the breach shows on the
 dashboard and in GET /api/status. An endpoint whose TLS certificate
 enters its warning window fires one webhook alert for that
 certificate, and the alert shows on the dashboard and in
-GET /api/status too.
+GET /api/status too. An endpoint whose p95 latency over the last
+24 hours crosses its `latency_p95_threshold_ms` shows a latency
+alert on the dashboard and in GET /api/status — advisory only,
+it stays UP and fires no webhook.
 """
 
-__version__ = "0.67.0"
+__version__ = "0.68.0"
 
 from .alerts import (CertExpiryAlerter, SlaBreachAlerter, WebhookAlerter,
                      alert_payload, cert_expiry_alert_payload,
@@ -28,6 +31,7 @@ from .checker import (ALLOWED_HTTP_METHODS, DEFAULT_CERT_EXPIRY_WARN_DAYS,
 from .cli import (apply_alert_cooldown_overrides,
                   apply_alert_threshold_overrides,
                   apply_check_interval_overrides, apply_max_latency_overrides,
+                  apply_latency_p95_threshold_overrides,
                   dry_run_check, endpoint_alert_cooldown,
                   endpoint_alert_threshold, endpoint_interval,
                   format_check_line, install_reload_handler,
@@ -35,13 +39,15 @@ from .cli import (apply_alert_cooldown_overrides,
                   make_sla_alerter, merged_status_page_sources, monitor_loop,
                   parse_alert_cooldown, parse_alert_threshold,
                   parse_check_interval,
-                  parse_max_latency, reload_config, resolve_alert_cooldowns,
+                  parse_latency_p95_threshold, parse_max_latency,
+                  reload_config, resolve_alert_cooldowns,
                   resolve_alert_thresholds,
                   retry_enabled, select_check_targets,
                   validate_alert_cooldowns, validate_alert_thresholds,
                   validate_cert_expiry_warnings,
                   validate_check_intervals, validate_http_methods,
-                  validate_latency_budgets, validate_request_headers,
+                  validate_latency_budgets, validate_latency_p95_thresholds,
+                  validate_request_headers,
                   validate_retry_settings, validate_status_page_sources)
 from .digest import (DEFAULT_DIGEST_INTERVAL_SECONDS, DigestAlerter,
                      build_digest, render_digest_email,
@@ -56,6 +62,8 @@ from .maintenance import (active_window, in_maintenance, summarize_windows,
 from .remote import ApiStatusHistory, fetch_remote_status
 from .server import (endpoint_cert_expiry_text, endpoint_headers_text,
                      endpoint_http_status_text, endpoint_latency_budget_text,
+                     endpoint_latency_p95_alert,
+                     endpoint_latency_p95_alert_text,
                      endpoint_check_interval_text, endpoint_method_text,
                      endpoint_retries_text,
                      format_duration, incidents_snapshot,

@@ -66,6 +66,7 @@ def load_config(path):
     validate_http_methods(endpoints)
     validate_request_headers(endpoints)
     validate_latency_budgets(endpoints)
+    validate_latency_p95_thresholds(endpoints)
     validate_cert_expiry_warnings(endpoints)
     validate_check_intervals(endpoints)
     validate_retry_settings(cfg, endpoints)
@@ -730,6 +731,32 @@ def validate_latency_budgets(endpoints):
                 f"positive number of milliseconds, not {value!r}")
 
 
+def validate_latency_p95_thresholds(endpoints):
+    """Reject bad `latency_p95_threshold_ms` entries at config load.
+
+    An endpoint may declare a p95 latency threshold in
+    milliseconds: when the windowed p95 over the last 24 hours
+    crosses it, the endpoint is in a latency-alert state (advisory
+    only — the endpoint stays UP, like a cert-expiry warning).
+    Any endpoint type can set one, and the value must be a
+    positive number (an integer or a float, not a bool, not a
+    string). Raises ValueError with a clear message; the monitor
+    refuses to start rather than run with a threshold it can
+    never judge.
+    """
+    for ep in endpoints:
+        value = ep.get("latency_p95_threshold_ms")
+        if value is None:
+            continue
+        if (isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or value <= 0):
+            raise ValueError(
+                f"endpoint {ep['name']!r}: latency_p95_threshold_ms "
+                f"must be a positive number of milliseconds, "
+                f"not {value!r}")
+
+
 def validate_cert_expiry_warnings(endpoints):
     """Reject bad `cert_expiry_warn_days` entries at config load.
 
@@ -811,6 +838,63 @@ def apply_max_latency_overrides(cfg, args):
             raise ValueError(
                 f"--max-latency names unknown endpoint {name!r}")
         by_name[name]["max_latency_ms"] = value
+
+
+def parse_latency_p95_threshold(spec):
+    """Parse a --latency-p95-threshold NAME=MS spec.
+
+    The name is an endpoint in the config; the threshold is the
+    p95 latency in milliseconds (over the last 24 hours) above
+    which the endpoint is in a latency-alert state. A spec
+    without '=', an empty name, or a threshold that is not a
+    positive number is rejected. Raises ValueError with a clear
+    message.
+    """
+    if "=" not in spec:
+        raise ValueError(
+            f"--latency-p95-threshold needs NAME=MS, got {spec!r}")
+    name, threshold = spec.split("=", 1)
+    name = name.strip()
+    threshold = threshold.strip()
+    if not name or not threshold:
+        raise ValueError(
+            f"--latency-p95-threshold needs a non-empty name and "
+            f"threshold, got {spec!r}")
+    try:
+        value = float(threshold)
+    except ValueError:
+        raise ValueError(
+            f"--latency-p95-threshold threshold must be a number, "
+            f"got {threshold!r}") from None
+    if value <= 0:
+        raise ValueError(
+            f"--latency-p95-threshold threshold must be a positive "
+            f"number of milliseconds, got {threshold!r}")
+    return name, value
+
+
+def apply_latency_p95_threshold_overrides(cfg, args):
+    """Apply --latency-p95-threshold flags to the config's endpoints.
+
+    Each flag sets (or replaces) the endpoint's
+    `latency_p95_threshold_ms` — the flag wins over the config
+    file, like --max-latency does for its setting. A flag naming
+    an endpoint that is not in the config is rejected, so a typo
+    does not silently do nothing. `args` may be a namespace
+    without the attribute (tests build their own) — then there
+    is nothing to apply. Raises ValueError with a clear message.
+    """
+    specs = getattr(args, "latency_p95_threshold", None) or []
+    if not specs:
+        return
+    by_name = {ep["name"]: ep for ep in cfg.get("endpoints", [])}
+    for spec in specs:
+        name, value = parse_latency_p95_threshold(spec)
+        if name not in by_name:
+            raise ValueError(
+                f"--latency-p95-threshold names unknown endpoint "
+                f"{name!r}")
+        by_name[name]["latency_p95_threshold_ms"] = value
 
 
 def parse_expect_status(spec):
@@ -1503,6 +1587,7 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
                     try:
                         apply_expect_status_overrides(new_cfg, args)
                         apply_max_latency_overrides(new_cfg, args)
+                        apply_latency_p95_threshold_overrides(new_cfg, args)
                         apply_check_interval_overrides(new_cfg, args)
                         apply_alert_threshold_overrides(new_cfg, args)
                         resolve_alert_thresholds(new_cfg, args)
@@ -1711,6 +1796,15 @@ def main(argv=None):
                              "latency exceeds MS milliseconds (overrides "
                              "the config file's max_latency_ms for that "
                              "endpoint; repeatable)")
+    parser.add_argument("--latency-p95-threshold", default=None,
+                        action="append", metavar="NAME=MS",
+                        help="raise a latency alert for the named "
+                             "endpoint when its p95 latency over the "
+                             "last 24 hours exceeds MS milliseconds "
+                             "(overrides the config file's "
+                             "latency_p95_threshold_ms for that "
+                             "endpoint; repeatable) — advisory only, "
+                             "the endpoint stays UP")
     parser.add_argument("--check-interval", default=None,
                         action="append", metavar="NAME=SECONDS",
                         help="check the named endpoint every SECONDS "
@@ -1821,6 +1915,7 @@ def main(argv=None):
     try:
         apply_expect_status_overrides(cfg, args)
         apply_max_latency_overrides(cfg, args)
+        apply_latency_p95_threshold_overrides(cfg, args)
         apply_check_interval_overrides(cfg, args)
         apply_alert_threshold_overrides(cfg, args)
         resolve_alert_thresholds(cfg, args)

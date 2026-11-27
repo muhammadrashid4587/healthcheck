@@ -191,6 +191,54 @@ def latency_percentiles_text(history, name, now=None):
             f"{pct['p99']:.1f} ms")
 
 
+def endpoint_latency_p95_alert(history, ep, now=None):
+    """The endpoint's p95 latency-alert state, or no alert.
+
+    Returns {"alert", "p95_ms", "threshold_ms"}: the windowed p95
+    over the last 24 hours (the same `History.latency_percentiles`
+    the API reports and the dashboard's percentiles column reads),
+    the endpoint's `latency_p95_threshold_ms`, and whether the p95
+    exceeds the threshold. No threshold means no alert, ever; a
+    threshold with no recorded latencies in the window means no
+    alert either — no data is not a slowdown. The alert is
+    advisory: it never changes the endpoint's status, like a
+    cert-expiry warning or an SLA breach. Shared by the API and
+    the dashboard, so the two can never disagree.
+    """
+    threshold = ep.get("latency_p95_threshold_ms")
+    pct = history.latency_percentiles(ep["name"], now=now)
+    p95 = pct["p95"] if pct is not None else None
+    return {
+        "alert": (threshold is not None and p95 is not None
+                  and p95 > threshold),
+        "p95_ms": p95,
+        "threshold_ms": threshold,
+    }
+
+
+def endpoint_latency_p95_alert_text(history, ep, now=None):
+    """The endpoint's p95 latency alert, or "-".
+
+    "ALERT 812.3 > 500 ms" when the windowed p95 over the last 24
+    hours exceeds the endpoint's `latency_p95_threshold_ms`;
+    "p95 210.0 / 500 ms" when it has a threshold and the p95 is
+    inside it; "500 ms (no data)" when it has a threshold but no
+    recorded latencies in the window yet; "-" when it has no
+    threshold. From the same `endpoint_latency_p95_alert` the API
+    reads, so the dashboard and the API can never disagree.
+    """
+    state = endpoint_latency_p95_alert(history, ep, now=now)
+    threshold = state["threshold_ms"]
+    if threshold is None:
+        return "-"
+    p95 = state["p95_ms"]
+    if p95 is None:
+        return f"{threshold:g} ms (no data)"
+    if state["alert"]:
+        return f"ALERT {p95:.1f} > {threshold:g} ms"
+    return f"p95 {p95:.1f} / {threshold:g} ms"
+
+
 def endpoint_latency_budget_text(ep):
     """The endpoint's latency budget, or "-".
 
@@ -350,7 +398,12 @@ def status_snapshot(history, endpoints, now=None,
     — a check slower than the budget is DOWN, like any other failed
     check), "latency_percentiles" ({"p50", "p95", "p99"} in ms over
     the last 24 hours, or None when there are no recorded latencies
-    in that window), "last_error" (the error string of the most
+    in that window), "latency_p95_threshold_ms" (the p95 threshold
+    in ms the endpoint's windowed p95 must stay within, or None
+    when it has none) and "latency_p95_alert" (True when that p95
+    exceeds the threshold — advisory only, the endpoint stays UP;
+    False when it has no threshold, no recorded latencies, or the
+    p95 is inside the threshold), "last_error" (the error string of the most
     recent failed check that actually ran — skipped and maintenance
     rounds do not count — or None when the endpoint never failed;
     it stays after a later success, so it answers "why did it last
@@ -525,6 +578,10 @@ def status_snapshot(history, endpoints, now=None,
                 name, 30 * 24 * 3600, now=ref),
             "latency_ms": latency,
             "max_latency_ms": ep.get("max_latency_ms"),
+            "latency_p95_threshold_ms": ep.get(
+                "latency_p95_threshold_ms"),
+            "latency_p95_alert": endpoint_latency_p95_alert(
+                history, ep, now=now)["alert"],
             "latency_percentiles": history.latency_percentiles(name, now=now),
             "last_error": history.last_error(name),
             "check_interval_s": ep.get("check_interval_s"),
@@ -1053,7 +1110,15 @@ def render_dashboard(history, endpoints, now=None,
     right after it is the total outage time inside the last 30
     days ("1h 23m", "-" when the endpoint recorded no downtime in
     the window), from the same `endpoint_downtime_text` the static
-    status page reads, so the two pages can never disagree.
+    status page reads, so the two pages can never disagree. The
+    Latency p95 alert column right after the p50 / p95 / p99
+    column is the endpoint's p95 latency-alert state ("ALERT
+    812.3 > 500 ms" when the windowed p95 crosses its
+    `latency_p95_threshold_ms`, "p95 210.0 / 500 ms" when it is
+    inside it, "-" when it has no threshold), from the same
+    `endpoint_latency_p95_alert_text` the API's
+    `latency_p95_alert` field reads, so the two can never
+    disagree.
     """
     uptime_snap = {row["name"]: row for row in uptime_snapshot(
         history, endpoints, now=now)["endpoints"]}
@@ -1095,6 +1160,8 @@ def render_dashboard(history, endpoints, now=None,
         week = f"{up_7d:.1f}%" if up_7d is not None else "-"
         month = f"{up_30d:.1f}%" if up_30d is not None else "-"
         pct_text = latency_percentiles_text(history, name, now=now)
+        p95_alert_text = endpoint_latency_p95_alert_text(
+            history, ep, now=now)
         budget_text = endpoint_latency_budget_text(ep)
         interval_text = endpoint_check_interval_text(ep)
         retries_text = endpoint_retries_text(cur)
@@ -1194,12 +1261,13 @@ def render_dashboard(history, endpoints, now=None,
             f"<td>{interval_text}</td>"
             f"<td>{retries_text}</td>"
             f"<td>{pct_text}</td>"
+            f"<td>{html.escape(p95_alert_text)}</td>"
             f"<td>{latency_sparkline(history, name)}</td>"
             f"<td>{html.escape(endpoint_last_error_text(history, name))}</td>"
             f"<td>{html.escape(sla_text)}</td>"
             f"<td>{last}</td></tr>"
         )
-    body = "\n".join(rows) or "<tr><td colspan=\"25\">No endpoints configured.</td></tr>"
+    body = "\n".join(rows) or "<tr><td colspan=\"26\">No endpoints configured.</td></tr>"
     if status_page_sources:
         items = "".join(
             f"<li>{html.escape(src['label'])} — "
@@ -1213,7 +1281,7 @@ def render_dashboard(history, endpoints, now=None,
 <html><head><meta charset="utf-8"><title>healthcheck</title>
 <style>body{{font-family:sans-serif;max-width:720px;margin:2em auto}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccc;padding:6px 10px;text-align:left}}.up{{color:green;font-weight:bold}}.down{{color:red;font-weight:bold}}.skipped{{color:#b8860b;font-weight:bold}}.maintenance{{color:#6a5acd;font-weight:bold}}</style>
 </head><body><h1>healthcheck</h1>
-<table><tr><th>Endpoint</th><th>Status</th><th>Down since</th><th>Fail streak</th><th>Alert at</th><th>Cooldown</th><th>Method</th><th>Headers</th><th>HTTP status</th><th>Cert expires</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Uptime 30d</th><th>Downtime 30d</th><th>Latency</th><th>Latency budget</th><th>Check every</th><th>Retries</th><th>Latency p50 / p95 / p99</th><th>Latency history</th><th>Last error</th><th>SLA breach</th><th>Last check</th></tr>
+<table><tr><th>Endpoint</th><th>Status</th><th>Down since</th><th>Fail streak</th><th>Alert at</th><th>Cooldown</th><th>Method</th><th>Headers</th><th>HTTP status</th><th>Cert expires</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Uptime 30d</th><th>Downtime 30d</th><th>Latency</th><th>Latency budget</th><th>Check every</th><th>Retries</th><th>Latency p50 / p95 / p99</th><th>Latency p95 alert</th><th>Latency history</th><th>Last error</th><th>SLA breach</th><th>Last check</th></tr>
 {body}</table>
 {incidents_html}{sources_html}<p>Rendered {time.strftime('%Y-%m-%d %H:%M:%S')} — reload to update.</p></body></html>"""
 
