@@ -276,6 +276,27 @@ def endpoint_sla_breach_text(history, endpoints, name, now=None,
     return text
 
 
+def endpoint_downtime_text(history, name, now=None):
+    """The endpoint's total downtime in the last 30 days, or "-".
+
+    The outage time inside the last 30 days, from the same
+    `History.downtime_seconds_window` the API reports as
+    `downtime_30d_seconds` — an outage that started before the
+    window only counts the part inside it, and an ongoing outage
+    accrues to `now` — formatted with `format_duration` ("1h 23m",
+    "45s"); "-" when the endpoint recorded no downtime in the
+    window (never down, or never checked). A remote source's
+    snapshot carries no per-check records, so it always shows
+    "-"; a file source shows its recorded downtime, like a local
+    one. Lives in server.py with the other `endpoint_*_text`
+    helpers the dashboard reads, so the static status page and
+    the API can never disagree about the figure.
+    """
+    seconds = history.downtime_seconds_window(name, 30 * 24 * 3600,
+                                              now=now)
+    return format_duration(seconds) if seconds > 0 else "-"
+
+
 def endpoint_depends_on_text(ep):
     """The endpoint this one depends on, or "-".
 

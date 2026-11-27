@@ -3,7 +3,13 @@ HTML file that can be hosted anywhere with no server.
 
 `render_status_page` builds the same view as the live dashboard —
 current status per endpoint, how long the current outage has
-lasted, uptime all-time / 24h / 7d / 30d, most recent
+lasted, uptime all-time / 24h / 7d / 30d, total downtime in the
+last 30 days ("1h 23m", "-" with no recorded downtime — from the
+same `endpoint_downtime_text` the API's `downtime_30d_seconds`
+is built on, so the page can never disagree with it; a remote
+source shows "-" since its snapshot carries no per-check records,
+while a file source shows its recorded downtime, like a local
+one), most recent
 latency, the Latency budget, Check every, and Retries columns
 after Latency, latency p50 / p95 / p99 over the last 24 hours, an
 inline latency sparkline, a Last error column after the sparkline
@@ -81,8 +87,10 @@ import time
 
 from .flap import DEFAULT_THRESHOLD
 from .server import (endpoint_cert_expiry_text, endpoint_check_interval_text,
-                     endpoint_depends_on_text, endpoint_headers_text,
-                     endpoint_http_status_text, endpoint_last_error_text,
+                     endpoint_depends_on_text, endpoint_downtime_text,
+                     endpoint_headers_text,
+                     endpoint_http_status_text,
+                     endpoint_last_error_text,
                      endpoint_latency_budget_text,
                      endpoint_maintenance_text, endpoint_method_text,
                      endpoint_retries_text, endpoint_sla_breach_text,
@@ -290,6 +298,17 @@ def _render_source(history, endpoints, generated, label=None):
         # shows "-" for them too, like the other config columns.
         depends_text = endpoint_depends_on_text(ep)
         maintenance_text = endpoint_maintenance_text(ep)
+        # Downtime in the last 30 days, right after Uptime 30d —
+        # the outage time inside the same window the 30d uptime
+        # covers, from the same helper the API's
+        # `downtime_30d_seconds` is built on, so the page can never
+        # disagree with it: "1h 23m", "-" when the endpoint
+        # recorded no downtime in the window (never down, or never
+        # checked). A remote source's snapshot carries no per-check
+        # records, so it always shows "-"; a file source shows its
+        # recorded downtime, like a local one.
+        downtime_text = endpoint_downtime_text(history, name,
+                                               now=generated)
         # SLA breach, right after Last error and before Last
         # check, exactly as the dashboard shows it — from the
         # same helper the dashboard reads, so the two pages can
@@ -315,7 +334,7 @@ def _render_source(history, endpoints, generated, label=None):
             f"<td>{html.escape(cert_text)}</td>"
             f"<td>{html.escape(depends_text)}</td>"
             f"<td>{html.escape(maintenance_text)}</td>"
-            f"<td>{up}</td><td>{day}</td><td>{week}</td><td>{month}</td><td>{latency}</td>"
+            f"<td>{up}</td><td>{day}</td><td>{week}</td><td>{month}</td><td>{downtime_text}</td><td>{latency}</td>"
             f"<td>{html.escape(budget_text)}</td>"
             f"<td>{html.escape(interval_text)}</td>"
             f"<td>{html.escape(retries_text)}</td>"
@@ -353,7 +372,7 @@ def _render_source(history, endpoints, generated, label=None):
                 f"<h3>{html.escape(name)}</h3><ul>{''.join(items)}</ul>"
                 f"<p>Duration histogram: {buckets}</p>")
     body = "\n".join(rows) or \
-        "<tr><td colspan=\"25\">No endpoints configured.</td></tr>"
+        "<tr><td colspan=\"26\">No endpoints configured.</td></tr>"
     if down_count:
         banner = (f"<p class=\"banner down\">{down_count} endpoint"
                   f"{'s' if down_count != 1 else ''} down</p>")
@@ -368,7 +387,7 @@ def _render_source(history, endpoints, generated, label=None):
         "<th>Alert at</th><th>Cooldown</th>"
         "<th>Method</th><th>Headers</th><th>HTTP status</th>"
         "<th>Cert expires</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th>"
-        "<th>Uptime 24h</th><th>Uptime 7d</th><th>Uptime 30d</th><th>Latency</th>"
+        "<th>Uptime 24h</th><th>Uptime 7d</th><th>Uptime 30d</th><th>Downtime 30d</th><th>Latency</th>"
         "<th>Latency budget</th><th>Check every</th><th>Retries</th>"
         "<th>Latency p50 / p95 / p99</th>"
         "<th>Latency history</th><th>Last error</th>"

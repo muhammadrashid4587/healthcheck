@@ -120,7 +120,8 @@ endpoint, and serves a small status dashboard over `http.server`.
   status, and Cert expires columns after the Cooldown column, and
   Depends on / Maintenance columns after Cert expires, and
   a Last error column after the latency sparkline, and an SLA breach
-  column after Last error — plus
+  column after Last error, and a Downtime column right after
+  Uptime 30d — plus
   a recent-incidents list per
   endpoint, as one self-contained HTML file with no external
   references, so it can be hosted anywhere with no server. It is a
@@ -173,6 +174,17 @@ endpoint, and serves a small status dashboard over `http.server`.
   records, so unlike the live dashboard it does not append the
   time the breach alert fired; an extra source's endpoints carry
   no config, so they have no target and always show `-`.
+  The Downtime column is the total outage time in the last 30
+  days, right after Uptime 30d — the same window that column
+  covers — from the same `endpoint_downtime_text` the API's
+  `downtime_30d_seconds` is built on, so the page can never
+  disagree with it. `1h 23m`, `-` when the endpoint recorded no
+  downtime in the window (never down, or never checked). An
+  outage that started before the window only counts the part
+  inside it, and an ongoing outage accrues to the page's
+  generated time. A remote source shows `-`, since its snapshot
+  carries no per-check records; a file source shows its recorded
+  downtime, like a local one.
   The Depends on column is the name from `depends_on` (`-` when
   the endpoint has no dependency) and Maintenance is the
   endpoint's declared windows (`Sat 02:00–04:00`, several joined
@@ -1549,8 +1561,33 @@ make test   # python3 -m unittest discover -s tests -v
   `endpoint_maintenance_text` helpers the dashboard reads too, so
   the two pages can never disagree; an extra source's endpoints
   carry no config, so they show `-` for both — done in 0.63.0.
+- [x] Downtime column on the static status page: the
+  `--status-page` output gains a Downtime 30d column right after
+  Uptime 30d — total outage time inside the last 30 days (`1h
+  23m`, `-` when the endpoint recorded no downtime in the window),
+  from a shared `endpoint_downtime_text` helper in server.py built
+  on the same `History.downtime_seconds_window` the API reports
+  as `downtime_30d_seconds`, so the page can never disagree with
+  it. An outage that started before the window only counts the
+  part inside it, and an ongoing outage accrues to the page's
+  generated time; a remote source shows `-`, since its snapshot
+  carries no per-check records, while a file source shows its
+  recorded downtime, like a local one — done in 0.64.0.
 
 ## Changelog
+
+- **0.64.0** — Downtime column on the static status page: the
+  `--status-page` output gains a Downtime 30d column right after
+  Uptime 30d — total outage time inside the last 30 days (`1h
+  23m`, `-` when the endpoint recorded no downtime in the window),
+  from a shared `endpoint_downtime_text` helper in server.py built
+  on the same `History.downtime_seconds_window` the API reports
+  as `downtime_30d_seconds`, so the page can never disagree with
+  it. An outage that started before the window only counts the
+  part inside it, and an ongoing outage accrues to the page's
+  generated time; a remote source shows `-`, since its snapshot
+  carries no per-check records, while a file source shows its
+  recorded downtime, like a local one.
 
 - **0.63.0** — Depends on / Maintenance columns on the static
   status page: the `--status-page` output gains the same two

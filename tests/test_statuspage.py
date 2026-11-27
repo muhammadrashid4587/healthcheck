@@ -570,6 +570,82 @@ class RenderTests(unittest.TestCase):
         self.assertIn("<th>SLA breach</th>", page)
         self.assertNotIn("BREACH", page)
 
+    def test_downtime_column(self):
+        # The static page carries a Downtime column right after
+        # Uptime 30d — total outage time inside the last 30 days,
+        # from the same `endpoint_downtime_text` the API's
+        # `downtime_30d_seconds` is built on, so the page can never
+        # disagree with it: "11m 0s", "-" when the endpoint
+        # recorded no downtime in the window.
+        hist = History()
+        # api: one 60-second outage 20 days ago (inside the 30d
+        # window) plus one 10-minute outage an hour ago — 11
+        # minutes total.
+        hist.record(_result("api", True, at=BASE - 20 * 86400))
+        hist.record(_result("api", False, at=BASE - 20 * 86400 + 60))
+        hist.record(_result("api", True, at=BASE - 20 * 86400 + 120))
+        hist.record(_result("api", True, at=BASE - 3600))
+        hist.record(_result("api", False, at=BASE - 1800))
+        hist.record(_result("api", True, at=BASE - 1200))
+        # web never went down; old's only outage was 40 days ago,
+        # outside the window.
+        hist.record(_result("web", True, at=BASE))
+        hist.record(_result("old", False, at=BASE - 40 * 86400))
+        hist.record(_result("old", True, at=BASE - 40 * 86400 + 60))
+        page = render_status_page(
+            hist,
+            [{"name": "api", "type": "http",
+              "url": "http://api.example.com"},
+             {"name": "web", "type": "http",
+              "url": "http://example.com"},
+             {"name": "old", "type": "http",
+              "url": "http://old.example.com"},
+             {"name": "ghost", "type": "http",
+              "url": "http://ghost.example.com"}],
+            now=BASE + 200)
+        self.assertIn(
+            "<th>Uptime 30d</th><th>Downtime 30d</th><th>Latency</th>",
+            page)
+        self.assertIn("<td>11m 0s</td>", page)
+        self.assertEqual(page.count("11m 0s"), 1)
+        # web, old and ghost recorded no downtime in the window,
+        # so their Downtime cells are "-"; api's is the only
+        # duration on the page.
+
+    def test_remote_source_downtime_column_is_dash(self):
+        # A remote source's snapshot carries no per-check records,
+        # so its Downtime column is "-", like its percentiles and
+        # sparkline — no data is not downtime.
+        page = render_status_page(
+            History(), [], now=BASE + 200,
+            extra_sources=[("remote", History(),
+                            [{"name": "web"}])])
+        self.assertIn("<h2>remote</h2>", page)
+        self.assertIn("<th>Downtime 30d</th>", page)
+        # The remote row's Uptime / Uptime 24h / Uptime 7d /
+        # Uptime 30d / Downtime 30d / Latency cells are all "-".
+        self.assertIn(
+            "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>"
+            "<td>-</td>",
+            page)
+        self.assertNotIn("m 0s", page)
+
+    def test_extra_source_file_keeps_downtime(self):
+        # A file extra source's endpoints carry no config, but
+        # Downtime comes from its recorded checks, so it shows
+        # its real recorded downtime, like a local one.
+        other = History()
+        other.record(_result("web", True, at=BASE - 3600))
+        other.record(_result("web", False, at=BASE - 1800))
+        other.record(_result("web", True, at=BASE - 1200))
+        page = render_status_page(
+            History(), [], now=BASE + 200,
+            extra_sources=[("eu-west", other,
+                            [{"name": "web"}])])
+        self.assertIn("<h2>eu-west</h2>", page)
+        self.assertIn("<th>Downtime 30d</th>", page)
+        self.assertIn("<td>10m 0s</td>", page)
+
     def test_remote_source_last_error_column_is_dash(self):
         # A remote source's snapshot carries no per-check records,
         # so its Last error column is "-", like its percentiles
