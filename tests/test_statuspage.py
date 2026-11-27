@@ -455,16 +455,57 @@ class RenderTests(unittest.TestCase):
         self.assertIn(
             "<th>Latency</th><th>Latency budget</th><th>Check every</th>"
             "<th>Retries</th><th>Latency p50 / p95 / p99</th>"
-            "<th>Latency history</th>",
+            "<th>Latency p95 alert</th><th>Latency history</th>",
             page)
         self.assertIn("<td>20.0 / 30.0 / 30.0 ms</td>", page)
         # ghost's row ends Latency / budget / interval / retries /
-        # percentiles / sparkline / last error / SLA breach / last
-        # check, all "-".
+        # percentiles / p95 alert / sparkline / last error / SLA
+        # breach / last check, all "-".
         self.assertIn(
             "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>"
-            "<td>-</td><td>-</td><td>-</td><td>-</td></tr>",
+            "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>",
             page)
+
+    def test_latency_p95_alert_column(self):
+        # The static page carries the same Latency p95 alert column
+        # as the dashboard, right after the percentiles and before
+        # the sparkline — from the same shared helper the dashboard
+        # reads, so the two pages can never disagree. "ALERT 30.0
+        # > 25 ms" when the windowed p95 crosses the endpoint's
+        # threshold, "p95 30.0 / 400 ms" when it is inside it,
+        # "400 ms (no data)" when it has a threshold but no
+        # recorded latencies, "-" when it has no threshold. A
+        # snapshot carries no alert records, so no "alerted" time
+        # is appended, unlike the live dashboard.
+        hist = History()
+        hist.record(_result("slow", True, latency=10.0, at=BASE))
+        hist.record(_result("slow", True, latency=20.0, at=BASE + 10))
+        hist.record(_result("slow", True, latency=30.0, at=BASE + 20))
+        hist.record(_result("ok", True, latency=10.0, at=BASE))
+        hist.record(_result("ok", True, latency=20.0, at=BASE + 10))
+        hist.record(_result("ok", True, latency=30.0, at=BASE + 20))
+        page = render_status_page(
+            hist,
+            [{"name": "slow", "type": "http",
+              "url": "http://slow.example.com",
+              "latency_p95_threshold_ms": 25},
+             {"name": "ok", "type": "http",
+              "url": "http://ok.example.com",
+              "latency_p95_threshold_ms": 400},
+             {"name": "nodata", "type": "http",
+              "url": "http://nodata.example.com",
+              "latency_p95_threshold_ms": 400},
+             {"name": "plain", "type": "http",
+              "url": "http://plain.example.com"}],
+            now=BASE + 200)
+        self.assertIn(
+            "<th>Latency p50 / p95 / p99</th>"
+            "<th>Latency p95 alert</th><th>Latency history</th>",
+            page)
+        self.assertIn("<td>ALERT 30.0 &gt; 25 ms</td>", page)
+        self.assertIn("<td>p95 30.0 / 400 ms</td>", page)
+        self.assertIn("<td>400 ms (no data)</td>", page)
+        self.assertNotIn("alerted", page)
 
     def test_last_error_column(self):
         # The static page carries the same Last error column as the
@@ -512,7 +553,7 @@ class RenderTests(unittest.TestCase):
             r"<td>-</td><td>-</td><td>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}</td></tr>")
         self.assertIn(
             "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>"
-            "<td>-</td><td>-</td><td>-</td><td>-</td></tr>",
+            "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>",
             page)
 
     def test_sla_breach_column(self):
@@ -648,8 +689,8 @@ class RenderTests(unittest.TestCase):
 
     def test_remote_source_last_error_column_is_dash(self):
         # A remote source's snapshot carries no per-check records,
-        # so its Last error column is "-", like its percentiles
-        # and sparkline.
+        # so its Last error column is "-", like its percentiles,
+        # p95 alert, and sparkline.
         page = render_status_page(
             History(), [], now=BASE + 200,
             extra_sources=[("remote", History(),
@@ -659,7 +700,7 @@ class RenderTests(unittest.TestCase):
                       "<th>SLA breach</th><th>Last check</th>", page)
         self.assertIn(
             "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>"
-            "<td>-</td><td>-</td><td>-</td><td>-</td></tr>",
+            "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>",
             page)
 
     def test_latency_budget_check_every_retries_columns(self):
@@ -695,11 +736,11 @@ class RenderTests(unittest.TestCase):
         # retry.
         self.assertIn("<td>-</td><td>-</td><td>0</td>", page)
         # ghost's row ends Latency / budget / interval / retries /
-        # percentiles / sparkline / last error / SLA breach / last
-        # check, all "-".
+        # percentiles / p95 alert / sparkline / last error / SLA
+        # breach / last check, all "-".
         self.assertIn(
             "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>"
-            "<td>-</td><td>-</td><td>-</td><td>-</td></tr>",
+            "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>",
             page)
 
     def test_remote_source_percentiles_column_is_dash(self):
@@ -712,15 +753,16 @@ class RenderTests(unittest.TestCase):
                             [{"name": "web"}])])
         self.assertIn("<h2>remote</h2>", page)
         self.assertIn("<th>Latency p50 / p95 / p99</th>", page)
+        self.assertIn("<th>Latency p95 alert</th>", page)
         self.assertIn("<th>Latency budget</th><th>Check every</th>"
                       "<th>Retries</th>", page)
         # A remote source's row ends Latency / budget / interval /
-        # retries / percentiles / sparkline / last error / SLA
-        # breach / last check, all "-": its snapshot carries no
-        # endpoint config and no per-check records.
+        # retries / percentiles / p95 alert / sparkline / last
+        # error / SLA breach / last check, all "-": its snapshot
+        # carries no endpoint config and no per-check records.
         self.assertIn(
             "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>"
-            "<td>-</td><td>-</td><td>-</td><td>-</td></tr>",
+            "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>",
             page)
 
     def test_extra_source_file_keeps_status_and_cert(self):

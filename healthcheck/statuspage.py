@@ -12,7 +12,8 @@ while a file source shows its recorded downtime, like a local
 one), most recent
 latency, the Latency budget, Check every, and Retries columns
 after Latency, latency p50 / p95 / p99 over the last 24 hours, an
-inline latency sparkline, a Last error column after the sparkline
+inline latency sparkline, a Latency p95 alert column right after
+the percentiles, a Last error column after the sparkline
 (the error string of the most recent failed check that actually
 ran, "-" when the endpoint never failed — from the same
 `endpoint_last_error_text` the dashboard reads, so the two pages
@@ -59,7 +60,17 @@ nearest-rank percentiles over the last 24 hours of recorded
 latencies, from the same `latency_percentiles_text` the dashboard
 reads, so the two pages can never disagree — "-" when the
 endpoint has no recorded latencies in the window, and for a
-remote source, whose snapshot carries no per-check records. The Down since column is the same figure the dashboard
+remote source, whose snapshot carries no per-check records. The
+Latency p95 alert column sits right after the percentiles, from
+the same `endpoint_latency_p95_alert_text` the dashboard reads,
+so the two pages can never disagree — "ALERT 812.3 > 400 ms"
+when the windowed p95 crosses the endpoint's
+`latency_p95_threshold_ms`, "p95 210.0 / 400 ms" when it is
+inside it, "400 ms (no data)" when it has a threshold but no
+recorded latencies in the window, "-" when it has no threshold.
+A static snapshot carries no alert records, so no "alerted" time
+is appended, unlike the live dashboard; an extra source's
+endpoints carry no config, so they always show "-". The Down since column is the same figure the dashboard
 shows, from the same `History.down_since()` — the duration from
 the first failed check in the current run of failures (unconfirmed
 failures included) to the page's generated time, "-" when the
@@ -92,6 +103,7 @@ from .server import (endpoint_cert_expiry_text, endpoint_check_interval_text,
                      endpoint_http_status_text,
                      endpoint_last_error_text,
                      endpoint_latency_budget_text,
+                     endpoint_latency_p95_alert_text,
                      endpoint_maintenance_text, endpoint_method_text,
                      endpoint_retries_text, endpoint_sla_breach_text,
                      format_duration, latency_percentiles_text,
@@ -258,6 +270,21 @@ def _render_source(history, endpoints, generated, label=None):
         # snapshot carries no per-check records.
         pct_text = latency_percentiles_text(history, name,
                                             now=generated)
+        # Latency p95 alert, right after the percentiles and before
+        # the sparkline, in the same order as the dashboard — from
+        # the same `endpoint_latency_p95_alert_text` the dashboard
+        # reads, so the two pages can never disagree. "ALERT 812.3
+        # > 400 ms" when the windowed p95 crosses the endpoint's
+        # `latency_p95_threshold_ms`, "p95 210.0 / 400 ms" when it
+        # is inside it, "400 ms (no data)" when it has a threshold
+        # but no recorded latencies in the window, "-" when it has
+        # no threshold. A static snapshot carries no alert records,
+        # so no "alerted" time is appended, unlike the live
+        # dashboard. An extra source's endpoints carry no config,
+        # so they show "-"; a file source's recorded latencies
+        # still cannot supply a threshold, so they show "-" too.
+        p95_alert_text = endpoint_latency_p95_alert_text(
+            history, ep, now=generated)
         # Latency budget / Check every / Retries, right after
         # Latency and before the percentiles, in the same order
         # as the dashboard — from the same helpers the dashboard
@@ -339,6 +366,7 @@ def _render_source(history, endpoints, generated, label=None):
             f"<td>{html.escape(interval_text)}</td>"
             f"<td>{html.escape(retries_text)}</td>"
             f"<td>{html.escape(pct_text)}</td>"
+            f"<td>{html.escape(p95_alert_text)}</td>"
             f"<td>{latency_sparkline(history, name)}</td>"
             f"<td>{html.escape(last_error_text)}</td>"
             f"<td>{html.escape(sla_text)}</td><td>{last}</td></tr>"
@@ -372,7 +400,7 @@ def _render_source(history, endpoints, generated, label=None):
                 f"<h3>{html.escape(name)}</h3><ul>{''.join(items)}</ul>"
                 f"<p>Duration histogram: {buckets}</p>")
     body = "\n".join(rows) or \
-        "<tr><td colspan=\"26\">No endpoints configured.</td></tr>"
+        "<tr><td colspan=\"27\">No endpoints configured.</td></tr>"
     if down_count:
         banner = (f"<p class=\"banner down\">{down_count} endpoint"
                   f"{'s' if down_count != 1 else ''} down</p>")
@@ -390,6 +418,7 @@ def _render_source(history, endpoints, generated, label=None):
         "<th>Uptime 24h</th><th>Uptime 7d</th><th>Uptime 30d</th><th>Downtime 30d</th><th>Latency</th>"
         "<th>Latency budget</th><th>Check every</th><th>Retries</th>"
         "<th>Latency p50 / p95 / p99</th>"
+        "<th>Latency p95 alert</th>"
         "<th>Latency history</th><th>Last error</th>"
         "<th>SLA breach</th>"
         "<th>Last check</th></tr>\n"

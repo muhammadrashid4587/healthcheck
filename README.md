@@ -133,7 +133,8 @@ endpoint, and serves a small status dashboard over `http.server`.
   renders the same view as the dashboard — current status, how long
   the current outage has lasted, uptime
   24h/7d/30d, latency sparkline, latency p50 / p95 / p99 over the
-  last 24 hours, and the Latency budget, Check every, and Retries
+  last 24 hours, a Latency p95 alert column right after the
+  percentiles, and the Latency budget, Check every, and Retries
   columns after Latency, and the Alert at / Cooldown
   columns next to the Fail streak, plus the Method, Headers, HTTP
   status, and Cert expires columns after the Cooldown column, and
@@ -177,6 +178,18 @@ endpoint, and serves a small status dashboard over `http.server`.
   reads, so the two pages can never disagree; a remote source
   shows `-` for all three, since its snapshot carries no endpoint
   config and no per-check records.
+  The Latency p95 alert column is the same `ALERT 812.3 > 400 ms`
+  figure the dashboard shows, right after the percentiles — from
+  the same helper the dashboard reads, so the two pages can never
+  disagree. `ALERT 812.3 > 400 ms` when the windowed p95 over the
+  last 24 hours crosses the endpoint's
+  `latency_p95_threshold_ms`, `p95 210.0 / 400 ms` when it is
+  inside it, `400 ms (no data)` when it has a threshold but no
+  recorded latencies in the window, `-` when it has no threshold.
+  A snapshot carries no alert records, so unlike the live
+  dashboard it does not append the time the breach alert fired;
+  an extra source's endpoints carry no config, so they always
+  show `-`.
   The Last error column is the error string of the endpoint's
   most recent failed check that actually ran (`-` when it never
   failed), from the same helper the dashboard reads, so the two
@@ -1707,8 +1720,42 @@ make test   # python3 -m unittest discover -s tests -v
   that falls back below the threshold re-arms) arrived in
   0.69.0, with `latency_p95_alerted_at` in `GET /api/status`
   and the alert time appended in the dashboard column.
+- [x] Latency p95 alert column on the static status page: the
+  `--status-page` output gains the same column the dashboard
+  shows, right after the percentiles and before the latency
+  sparkline — `ALERT 812.3 > 400 ms` when the windowed p95 over
+  the last 24 hours crosses the endpoint's
+  `latency_p95_threshold_ms`, `p95 210.0 / 400 ms` when it is
+  inside it, `400 ms (no data)` when it has a threshold but no
+  recorded latencies in the window, `-` when it has no threshold
+  — from a shared `endpoint_latency_p95_alert_text` helper the
+  dashboard reads too, so the two pages can never disagree. A
+  snapshot carries no alert records, so no "alerted" time is
+  appended, unlike the live dashboard; an extra source's
+  endpoints carry no config, so they always show `-` — done in
+  0.70.0. (The 0.69.0 changelog's "Next" named the p50 / p95 /
+  p99 column, which had already shipped in 0.59.0; the p95 alert
+  column was the column actually still missing from the page.)
 
 ## Changelog
+
+- **0.70.0** — Latency p95 alert column on the static status page:
+  the `--status-page` output gains the same column the dashboard
+  shows, right after the Latency p50 / p95 / p99 column and before
+  the latency sparkline — `ALERT 812.3 > 400 ms` when the windowed
+  p95 over the last 24 hours crosses the endpoint's
+  `latency_p95_threshold_ms`, `p95 210.0 / 400 ms` when it is
+  inside it, `400 ms (no data)` when it has a threshold but no
+  recorded latencies in the window, `-` when it has no threshold
+  — from the same shared `endpoint_latency_p95_alert_text` helper
+  the dashboard reads, so the two pages can never disagree. A
+  static snapshot carries no alert records, so no "alerted" time
+  is appended, unlike the live dashboard; an extra source's
+  endpoints carry no config, so they always show `-`, and the
+  empty-table colspan moves 26 → 27. Next: a `--latency-p95-alert`
+  one-shot CLI that fires the p95 breach alerts once from the
+  command line and exits, like `--sla-alert` (0.69.0 has no such
+  one-shot; the monitor loop is the only trigger today).
 
 - **0.69.0** — Webhook alert when the p95 crosses its threshold:
   `LatencyP95Alerter` fires one POST per crossing — a
@@ -1727,8 +1774,9 @@ make test   # python3 -m unittest discover -s tests -v
   `latency_p95_alerted_at` in `GET /api/status` and appended to
   the dashboard's Latency p95 alert column ("ALERT 812.3 > 400
   ms alerted 12:30"), and a SIGHUP reload does not re-fire an
-  alert sent for an ongoing breach. Next: a Latency p50 / p95 /
-  p99 column on the static status page.
+  alert sent for an ongoing breach. Next: a Latency p95 alert
+  column on the static status page (the p50 / p95 / p99 column
+  named here had already shipped in 0.59.0).
 
 - **0.68.0** — Per-endpoint p95 latency alerts:
   `latency_p95_threshold_ms` declares the p95 latency an
