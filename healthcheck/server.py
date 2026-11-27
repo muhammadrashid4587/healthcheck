@@ -682,6 +682,42 @@ def render_uptime_report(snapshot):
     return "\n".join(lines) + "\n"
 
 
+def render_downtime_report(snapshot):
+    """Render an uptime snapshot as a downtime-only text report.
+
+    Takes the dict `uptime_snapshot` returns — the same figures
+    `GET /api/uptime` serves and `--uptime-report` prints — so
+    the downtime export can never disagree with either: per
+    endpoint, the total outage time in each window (24h / 7d /
+    30d) from `History.downtime_seconds_window`, formatted with
+    `format_duration`. An outage that started before a window
+    only counts the part inside it, and an ongoing outage
+    accrues downtime to the report time. The `Total:` section
+    sums the per-endpoint figures per window (two endpoints down
+    at once count once each), so an operator can see the
+    monitor's whole outage load at a glance. "0s" when an
+    endpoint recorded no downtime in a window — no downtime is
+    not missing data.
+    """
+    lines = ["Downtime report (generated "
+             + time.strftime("%Y-%m-%d %H:%M:%S",
+                             time.localtime(snapshot["generated_at"]))
+             + ")"]
+    totals = {label: 0.0 for label in snapshot["windows"]}
+    for row in snapshot["endpoints"]:
+        lines.append(f"  {row['name']}:")
+        for label in snapshot["windows"]:
+            seconds = row["windows"][label]["downtime_seconds"]
+            totals[label] += seconds
+            lines.append(f"    {label}: {format_duration(seconds)} "
+                         f"downtime")
+    lines.append("  Total:")
+    for label in snapshot["windows"]:
+        lines.append(f"    {label}: {format_duration(totals[label])} "
+                     f"downtime")
+    return "\n".join(lines) + "\n"
+
+
 def incidents_snapshot(history, endpoints, limit=5, name=None, now=None):
     """Recent incidents per endpoint as a JSON-ready dict, built
     from the same `History.recent_incidents()` the dashboard, the

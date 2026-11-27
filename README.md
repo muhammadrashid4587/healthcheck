@@ -101,7 +101,11 @@ endpoint, and serves a small status dashboard over `http.server`.
   /api/status` carries the 30-day uptime and the downtime per
   window too. `--uptime-report` prints the same summary as plain
   text (with `--uptime-out PATH` to write it to a file instead),
-  so it can go into a log or a script.
+  so it can go into a log or a script. `--downtime-report` prints
+  the same downtime figures on their own — per endpoint, plus a
+  total across endpoints (with `--downtime-out PATH` to write it
+  to a file instead) — so an operator can see the monitor's whole
+  outage load at a glance.
 - Down since: when an endpoint is DOWN the dashboard shows how long
   the outage has lasted ("12m 34s"), from the first failed check in
   the current run of failures — unconfirmed failures below the flap
@@ -1604,8 +1608,30 @@ make test   # python3 -m unittest discover -s tests -v
   a window only counts the part inside it, and an ongoing outage
   accrues to the request time. Always present, even at 0, like
   `healthcheck_incidents_total` — done in 0.66.0.
+- [x] Downtime report as a text export: `--downtime-report`
+  prints the per-endpoint downtime over the last 24 hours / 7
+  days / 30 days on its own, plus a total across endpoints per
+  window, rendered from the same `uptime_snapshot` the API
+  serves and `--uptime-report` prints, so the export can never
+  disagree with either — an outage that started before a window
+  only counts the part inside it, an ongoing outage accrues to
+  the report time, and "0s" when an endpoint recorded no
+  downtime in a window. `--downtime-out PATH` writes it to a
+  file instead — done in 0.67.0.
 
 ## Changelog
+
+- **0.67.0** — Downtime report as a text export:
+  `--downtime-report` prints the per-endpoint downtime over the
+  last 24 hours / 7 days / 30 days on its own, plus a total
+  across endpoints per window, rendered from the same
+  `uptime_snapshot` the API serves and `--uptime-report` prints,
+  so the export can never disagree with either — an outage that
+  started before a window only counts the part inside it, an
+  ongoing outage accrues to the report time, and "0s" when an
+  endpoint recorded no downtime in a window. `--downtime-out
+  PATH` writes it to a file instead. Next: per-endpoint latency
+  alerts when p95 crosses a threshold.
 
 - **0.66.0** — Downtime gauges in `GET /metrics`:
   `healthcheck_downtime_seconds_24h` / `_7d` / `_30d` expose the
