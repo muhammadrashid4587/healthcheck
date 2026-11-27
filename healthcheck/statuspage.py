@@ -6,7 +6,11 @@ current status per endpoint, how long the current outage has
 lasted, uptime all-time / 24h / 7d / 30d, most recent
 latency, the Latency budget, Check every, and Retries columns
 after Latency, latency p50 / p95 / p99 over the last 24 hours, an
-inline latency sparkline, and the Alert at / Cooldown
+inline latency sparkline, a Last error column after the sparkline
+(the error string of the most recent failed check that actually
+ran, "-" when the endpoint never failed — from the same
+`endpoint_last_error_text` the dashboard reads, so the two pages
+can never disagree), and the Alert at / Cooldown
 columns next to the Fail streak, plus the Method, Headers, HTTP
 status and Cert expires columns after the Cooldown column — plus a
 recent-incidents list
@@ -64,6 +68,7 @@ import time
 from .flap import DEFAULT_THRESHOLD
 from .server import (endpoint_cert_expiry_text, endpoint_check_interval_text,
                      endpoint_headers_text, endpoint_http_status_text,
+                     endpoint_last_error_text,
                      endpoint_latency_budget_text, endpoint_method_text,
                      endpoint_retries_text,
                      format_duration, latency_percentiles_text,
@@ -246,6 +251,17 @@ def _render_source(history, endpoints, generated, label=None):
         budget_text = endpoint_latency_budget_text(ep)
         interval_text = endpoint_check_interval_text(ep)
         retries_text = endpoint_retries_text(cur)
+        # Last error, right after the latency sparkline and before
+        # Last check, exactly as the dashboard shows it — from the
+        # same helper the dashboard reads, so the two pages can
+        # never disagree. The error string of the most recent
+        # failed check that actually ran ("-" when the endpoint
+        # never failed); it stays after a later success, so a
+        # recovered endpoint still shows why it last failed. A
+        # remote source shows "-" — its snapshot carries no
+        # per-check records — and a file source shows its recorded
+        # failure, like a local one.
+        last_error_text = endpoint_last_error_text(history, name)
         rows.append(
             f"<tr><td>{html.escape(name)}</td>"
             f"<td class=\"{cls}\">{status}{status_detail}</td>"
@@ -262,7 +278,8 @@ def _render_source(history, endpoints, generated, label=None):
             f"<td>{html.escape(interval_text)}</td>"
             f"<td>{html.escape(retries_text)}</td>"
             f"<td>{html.escape(pct_text)}</td>"
-            f"<td>{latency_sparkline(history, name)}</td><td>{last}</td></tr>"
+            f"<td>{latency_sparkline(history, name)}</td>"
+            f"<td>{html.escape(last_error_text)}</td><td>{last}</td></tr>"
         )
         incidents = recent_incidents(history, name, now=generated)
         if incidents:
@@ -293,7 +310,7 @@ def _render_source(history, endpoints, generated, label=None):
                 f"<h3>{html.escape(name)}</h3><ul>{''.join(items)}</ul>"
                 f"<p>Duration histogram: {buckets}</p>")
     body = "\n".join(rows) or \
-        "<tr><td colspan=\"21\">No endpoints configured.</td></tr>"
+        "<tr><td colspan=\"22\">No endpoints configured.</td></tr>"
     if down_count:
         banner = (f"<p class=\"banner down\">{down_count} endpoint"
                   f"{'s' if down_count != 1 else ''} down</p>")
@@ -311,7 +328,8 @@ def _render_source(history, endpoints, generated, label=None):
         "<th>Uptime 24h</th><th>Uptime 7d</th><th>Uptime 30d</th><th>Latency</th>"
         "<th>Latency budget</th><th>Check every</th><th>Retries</th>"
         "<th>Latency p50 / p95 / p99</th>"
-        "<th>Latency history</th><th>Last check</th></tr>\n"
+        "<th>Latency history</th><th>Last error</th>"
+        "<th>Last check</th></tr>\n"
         f"{body}</table>")
     if label is None:
         return (f"{banner}\n{table}\n<h2>Recent incidents</h2>\n"

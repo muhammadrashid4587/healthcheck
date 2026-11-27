@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import tempfile
 import unittest
 
@@ -393,10 +394,74 @@ class RenderTests(unittest.TestCase):
             page)
         self.assertIn("<td>20.0 / 30.0 / 30.0 ms</td>", page)
         # ghost's row ends Latency / budget / interval / retries /
-        # percentiles / sparkline / last check, all "-".
+        # percentiles / sparkline / last error / last check, all "-".
         self.assertIn(
             "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>"
-            "<td>-</td><td>-</td></tr>",
+            "<td>-</td><td>-</td><td>-</td></tr>",
+            page)
+
+    def test_last_error_column(self):
+        # The static page carries the same Last error column as the
+        # dashboard, right after the latency sparkline and before
+        # Last check — from the same shared helper the dashboard
+        # reads, so the two pages can never disagree. It is the
+        # error string of the most recent failed check that
+        # actually ran ("-" when the endpoint never failed), and
+        # it stays after a later success, so a recovered endpoint
+        # still shows why it last failed. The error is HTML-escaped.
+        hist = History()
+        hist.record(_result("web", False, at=BASE,
+                            error="connection refused"))
+        hist.record(_result("web", True, latency=10.0, at=BASE + 60))
+        hist.record(_result("evil", False, at=BASE,
+                            error='bad <script> & "quote"'))
+        hist.record(_result("plain", True, latency=5.0, at=BASE))
+        page = render_status_page(
+            hist,
+            [{"name": "web", "type": "http",
+              "url": "http://example.com"},
+             {"name": "evil", "type": "http",
+              "url": "http://evil.example.com"},
+             {"name": "plain", "type": "http",
+              "url": "http://plain.example.com"},
+             {"name": "ghost", "type": "http",
+              "url": "http://ghost.example.com"}],
+            now=BASE + 200)
+        self.assertIn(
+            "<th>Latency history</th><th>Last error</th>"
+            "<th>Last check</th>",
+            page)
+        # web recovered, but its last error is still shown.
+        self.assertIn("<td>connection refused</td>", page)
+        # The error text is escaped, never raw HTML.
+        self.assertIn(
+            "<td>bad &lt;script&gt; &amp; &quot;quote&quot;</td>", page)
+        self.assertNotIn("<script>", page)
+        # plain never failed and ghost was never checked: "-".
+        # plain's row ends with its last error "-" and then its
+        # last check time; ghost's row ends with "-" throughout.
+        self.assertRegex(
+            page,
+            r"<td>-</td><td>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}</td></tr>")
+        self.assertIn(
+            "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>"
+            "<td>-</td><td>-</td><td>-</td></tr>",
+            page)
+
+    def test_remote_source_last_error_column_is_dash(self):
+        # A remote source's snapshot carries no per-check records,
+        # so its Last error column is "-", like its percentiles
+        # and sparkline.
+        page = render_status_page(
+            History(), [], now=BASE + 200,
+            extra_sources=[("remote", History(),
+                            [{"name": "web"}])])
+        self.assertIn("<h2>remote</h2>", page)
+        self.assertIn("<th>Latency history</th><th>Last error</th>"
+                      "<th>Last check</th>", page)
+        self.assertIn(
+            "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>"
+            "<td>-</td><td>-</td><td>-</td></tr>",
             page)
 
     def test_latency_budget_check_every_retries_columns(self):
@@ -451,12 +516,12 @@ class RenderTests(unittest.TestCase):
         self.assertIn("<th>Latency budget</th><th>Check every</th>"
                       "<th>Retries</th>", page)
         # A remote source's row ends Latency / budget / interval /
-        # retries / percentiles / sparkline / last check, all "-":
-        # its snapshot carries no endpoint config and no per-check
-        # records.
+        # retries / percentiles / sparkline / last error / last
+        # check, all "-": its snapshot carries no endpoint config
+        # and no per-check records.
         self.assertIn(
             "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>"
-            "<td>-</td><td>-</td></tr>",
+            "<td>-</td><td>-</td><td>-</td></tr>",
             page)
 
     def test_extra_source_file_keeps_status_and_cert(self):

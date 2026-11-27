@@ -117,7 +117,8 @@ endpoint, and serves a small status dashboard over `http.server`.
   last 24 hours, and the Latency budget, Check every, and Retries
   columns after Latency, and the Alert at / Cooldown
   columns next to the Fail streak, plus the Method, Headers, HTTP
-  status, and Cert expires columns after the Cooldown column — plus
+  status, and Cert expires columns after the Cooldown column, and
+  a Last error column after the latency sparkline — plus
   a recent-incidents list per
   endpoint, as one self-contained HTML file with no external
   references, so it can be hosted anywhere with no server. It is a
@@ -154,6 +155,13 @@ endpoint, and serves a small status dashboard over `http.server`.
   reads, so the two pages can never disagree; a remote source
   shows `-` for all three, since its snapshot carries no endpoint
   config and no per-check records.
+  The Last error column is the error string of the endpoint's
+  most recent failed check that actually ran (`-` when it never
+  failed), from the same helper the dashboard reads, so the two
+  pages can never disagree; it stays after a later success, so a
+  recovered endpoint still shows why it last failed, and a remote
+  source shows `-`, since its snapshot carries no per-check
+  records.
   Combine with `--once` to check first, then render.
   `--status-page-source LABEL=PATH` (repeatable) merges another
   healthcheck instance's persisted history into the same page under
@@ -1492,8 +1500,29 @@ make test   # python3 -m unittest discover -s tests -v
   disagree; a remote source shows `-` for all three, since its
   snapshot carries no endpoint config and no per-check records —
   done in 0.60.0.
+- [x] Last error column on the static status page: the
+  `--status-page` output gains the same column the dashboard
+  shows, right after the latency sparkline and before Last check
+  — the error string of the most recent failed check that
+  actually ran (`-` when the endpoint never failed), from a
+  shared `endpoint_last_error_text` helper the dashboard reads
+  too, so the two pages can never disagree. It stays after a
+  later success, so a recovered endpoint still shows why it last
+  failed; a remote source shows `-`, since its snapshot carries
+  no per-check records — done in 0.61.0.
 
 ## Changelog
+
+- **0.61.0** — Last error column on the static status page: the
+  `--status-page` output gains the same column the dashboard has,
+  right after the latency sparkline and before Last check — the
+  error string of the most recent failed check that actually ran
+  (`-` when the endpoint never failed), from a shared
+  `endpoint_last_error_text` helper the dashboard reads too, so
+  the two pages can never disagree. It stays after a later
+  success, so a recovered endpoint still shows why it last
+  failed; a remote source shows `-`, since its snapshot carries
+  no per-check records.
 
 - **0.60.0** — Latency budget, Check every, and Retries columns on
   the static status page: the `--status-page` output gains the

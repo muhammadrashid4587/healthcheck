@@ -227,6 +227,19 @@ def endpoint_retries_text(cur):
     return str(cur.get("retries", 0))
 
 
+def endpoint_last_error_text(history, name):
+    """The endpoint's most recent failure, or "-".
+
+    The error string of the most recent failed check that actually
+    ran — skipped and maintenance rounds never failed, so they do
+    not count, and it stays after a later success, so a recovered
+    endpoint still shows why it last failed. "-" when the endpoint
+    never failed (or was never checked). Shared by the dashboard
+    and the static status page, so the two can never disagree.
+    """
+    return history.last_error(name) or "-"
+
+
 def status_snapshot(history, endpoints, now=None,
                     status_page_sources=None, sla_alerts=None,
                     cert_alerts=None, alert_records=None):
@@ -1039,7 +1052,7 @@ def render_dashboard(history, endpoints, now=None,
             f"<td>{retries_text}</td>"
             f"<td>{pct_text}</td>"
             f"<td>{latency_sparkline(history, name)}</td>"
-            f"<td>{html.escape(history.last_error(name) or '-')}</td>"
+            f"<td>{html.escape(endpoint_last_error_text(history, name))}</td>"
             f"<td>{html.escape(sla_text)}</td>"
             f"<td>{last}</td></tr>"
         )

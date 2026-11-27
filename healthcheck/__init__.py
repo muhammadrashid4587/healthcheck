@@ -13,7 +13,7 @@ certificate, and the alert shows on the dashboard and in
 GET /api/status too.
 """
 
-__version__ = "0.60.0"
+__version__ = "0.61.0"
 
 from .alerts import (CertExpiryAlerter, SlaBreachAlerter, WebhookAlerter,
                      alert_payload, cert_expiry_alert_payload,
