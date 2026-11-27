@@ -4,8 +4,9 @@ HTML file that can be hosted anywhere with no server.
 `render_status_page` builds the same view as the live dashboard —
 current status per endpoint, how long the current outage has
 lasted, uptime all-time / 24h / 7d / 30d, most recent
-latency, latency p50 / p95 / p99 over the last 24 hours, an inline
-latency sparkline, and the Alert at / Cooldown
+latency, the Latency budget, Check every, and Retries columns
+after Latency, latency p50 / p95 / p99 over the last 24 hours, an
+inline latency sparkline, and the Alert at / Cooldown
 columns next to the Fail streak, plus the Method, Headers, HTTP
 status and Cert expires columns after the Cooldown column — plus a
 recent-incidents list
@@ -61,8 +62,10 @@ import os
 import time
 
 from .flap import DEFAULT_THRESHOLD
-from .server import (endpoint_cert_expiry_text, endpoint_headers_text,
-                     endpoint_http_status_text, endpoint_method_text,
+from .server import (endpoint_cert_expiry_text, endpoint_check_interval_text,
+                     endpoint_headers_text, endpoint_http_status_text,
+                     endpoint_latency_budget_text, endpoint_method_text,
+                     endpoint_retries_text,
                      format_duration, latency_percentiles_text,
                      latency_sparkline)
 
@@ -227,6 +230,22 @@ def _render_source(history, endpoints, generated, label=None):
         # snapshot carries no per-check records.
         pct_text = latency_percentiles_text(history, name,
                                             now=generated)
+        # Latency budget / Check every / Retries, right after
+        # Latency and before the percentiles, in the same order
+        # as the dashboard — from the same helpers the dashboard
+        # reads, so the two pages can never disagree. The budget
+        # is the endpoint's `max_latency_ms` ("-" when it has
+        # none); Check every is its `check_interval_s` ("-" when
+        # it uses the global interval); Retries is the retries
+        # spent on the most recent recorded check ("-" when never
+        # checked). An extra source's endpoints carry no config,
+        # so they show "-" for budget and interval; a file source
+        # still shows its recorded retries, while a remote source
+        # shows "-" for all three — its snapshot carries no
+        # per-check records.
+        budget_text = endpoint_latency_budget_text(ep)
+        interval_text = endpoint_check_interval_text(ep)
+        retries_text = endpoint_retries_text(cur)
         rows.append(
             f"<tr><td>{html.escape(name)}</td>"
             f"<td class=\"{cls}\">{status}{status_detail}</td>"
@@ -239,6 +258,9 @@ def _render_source(history, endpoints, generated, label=None):
             f"<td>{html.escape(http_status)}</td>"
             f"<td>{html.escape(cert_text)}</td>"
             f"<td>{up}</td><td>{day}</td><td>{week}</td><td>{month}</td><td>{latency}</td>"
+            f"<td>{html.escape(budget_text)}</td>"
+            f"<td>{html.escape(interval_text)}</td>"
+            f"<td>{html.escape(retries_text)}</td>"
             f"<td>{html.escape(pct_text)}</td>"
             f"<td>{latency_sparkline(history, name)}</td><td>{last}</td></tr>"
         )
@@ -271,7 +293,7 @@ def _render_source(history, endpoints, generated, label=None):
                 f"<h3>{html.escape(name)}</h3><ul>{''.join(items)}</ul>"
                 f"<p>Duration histogram: {buckets}</p>")
     body = "\n".join(rows) or \
-        "<tr><td colspan=\"18\">No endpoints configured.</td></tr>"
+        "<tr><td colspan=\"21\">No endpoints configured.</td></tr>"
     if down_count:
         banner = (f"<p class=\"banner down\">{down_count} endpoint"
                   f"{'s' if down_count != 1 else ''} down</p>")
@@ -287,6 +309,7 @@ def _render_source(history, endpoints, generated, label=None):
         "<th>Method</th><th>Headers</th><th>HTTP status</th>"
         "<th>Cert expires</th><th>Uptime</th>"
         "<th>Uptime 24h</th><th>Uptime 7d</th><th>Uptime 30d</th><th>Latency</th>"
+        "<th>Latency budget</th><th>Check every</th><th>Retries</th>"
         "<th>Latency p50 / p95 / p99</th>"
         "<th>Latency history</th><th>Last check</th></tr>\n"
         f"{body}</table>")

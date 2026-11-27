@@ -387,14 +387,56 @@ class RenderTests(unittest.TestCase):
               "url": "http://ghost.example.com"}],
             now=BASE + 200)
         self.assertIn(
-            "<th>Latency</th><th>Latency p50 / p95 / p99</th>"
+            "<th>Latency</th><th>Latency budget</th><th>Check every</th>"
+            "<th>Retries</th><th>Latency p50 / p95 / p99</th>"
             "<th>Latency history</th>",
             page)
         self.assertIn("<td>20.0 / 30.0 / 30.0 ms</td>", page)
-        # ghost's row ends Latency / percentiles / sparkline /
-        # last check, all "-".
-        self.assertIn("<td>-</td><td>-</td><td>-</td><td>-</td></tr>",
-                      page)
+        # ghost's row ends Latency / budget / interval / retries /
+        # percentiles / sparkline / last check, all "-".
+        self.assertIn(
+            "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>"
+            "<td>-</td><td>-</td></tr>",
+            page)
+
+    def test_latency_budget_check_every_retries_columns(self):
+        # The static page carries the same Latency budget, Check
+        # every, and Retries columns as the dashboard, right after
+        # Latency and before the percentiles, in the same order —
+        # from the same shared helpers the dashboard reads, so the
+        # two pages can never disagree. The budget is the
+        # endpoint's max_latency_ms ("-" when it has none), Check
+        # every its check_interval_s ("-" when it uses the global
+        # interval), Retries the retries spent on the most recent
+        # recorded check ("-" when never checked).
+        hist = History()
+        hist.record(_result("web", True, latency=10.0, at=BASE,
+                            retries=1))
+        hist.record(_result("plain", True, latency=5.0, at=BASE))
+        page = render_status_page(
+            hist,
+            [{"name": "web", "type": "http",
+              "url": "http://example.com",
+              "max_latency_ms": 500, "check_interval_s": 60},
+             {"name": "plain", "type": "http",
+              "url": "http://plain.example.com"},
+             {"name": "ghost", "type": "http",
+              "url": "http://ghost.example.com"}],
+            now=BASE + 200)
+        self.assertIn(
+            "<th>Latency</th><th>Latency budget</th><th>Check every</th>"
+            "<th>Retries</th><th>Latency p50 / p95 / p99</th>",
+            page)
+        self.assertIn("<td>500 ms</td><td>60 s</td><td>1</td>", page)
+        # plain has no budget or interval and its check needed no
+        # retry.
+        self.assertIn("<td>-</td><td>-</td><td>0</td>", page)
+        # ghost's row ends Latency / budget / interval / retries /
+        # percentiles / sparkline / last check, all "-".
+        self.assertIn(
+            "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>"
+            "<td>-</td><td>-</td></tr>",
+            page)
 
     def test_remote_source_percentiles_column_is_dash(self):
         # A remote source's snapshot carries no per-check records,
@@ -406,8 +448,16 @@ class RenderTests(unittest.TestCase):
                             [{"name": "web"}])])
         self.assertIn("<h2>remote</h2>", page)
         self.assertIn("<th>Latency p50 / p95 / p99</th>", page)
-        self.assertIn("<td>-</td><td>-</td><td>-</td><td>-</td></tr>",
-                      page)
+        self.assertIn("<th>Latency budget</th><th>Check every</th>"
+                      "<th>Retries</th>", page)
+        # A remote source's row ends Latency / budget / interval /
+        # retries / percentiles / sparkline / last check, all "-":
+        # its snapshot carries no endpoint config and no per-check
+        # records.
+        self.assertIn(
+            "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>"
+            "<td>-</td><td>-</td></tr>",
+            page)
 
     def test_extra_source_file_keeps_status_and_cert(self):
         # A file extra source's endpoints carry no config, so

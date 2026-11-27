@@ -114,7 +114,8 @@ endpoint, and serves a small status dashboard over `http.server`.
   renders the same view as the dashboard — current status, how long
   the current outage has lasted, uptime
   24h/7d/30d, latency sparkline, latency p50 / p95 / p99 over the
-  last 24 hours, and the Alert at / Cooldown
+  last 24 hours, and the Latency budget, Check every, and Retries
+  columns after Latency, and the Alert at / Cooldown
   columns next to the Fail streak, plus the Method, Headers, HTTP
   status, and Cert expires columns after the Cooldown column — plus
   a recent-incidents list per
@@ -145,6 +146,14 @@ endpoint, and serves a small status dashboard over `http.server`.
   so the two pages can never disagree; a snapshot carries no alert
   records, so unlike the live dashboard the page does not append
   the time a cert-expiry alert fired.
+  The Latency budget column is the endpoint's `max_latency_ms`
+  (`-` when it has none), Check every is its `check_interval_s`
+  (`-` when it uses the global interval), and Retries is the
+  retries spent on the most recent recorded check (`-` when never
+  checked). All three come from the same helpers the dashboard
+  reads, so the two pages can never disagree; a remote source
+  shows `-` for all three, since its snapshot carries no endpoint
+  config and no per-check records.
   Combine with `--once` to check first, then render.
   `--status-page-source LABEL=PATH` (repeatable) merges another
   healthcheck instance's persisted history into the same page under
@@ -1471,8 +1480,32 @@ make test   # python3 -m unittest discover -s tests -v
   (never checked, only skips / maintenance), and for a remote
   source, whose snapshot carries no per-check records — done in
   0.59.0.
+- [x] Latency budget, Check every, and Retries columns on the
+  static status page: the `--status-page` output gains the same
+  three columns the dashboard shows, right after Latency and
+  before the latency percentiles, in the same order — the
+  endpoint's `max_latency_ms` (`-` when it has none), its
+  `check_interval_s` (`-` when it uses the global interval), and
+  the retries spent on the most recent recorded check (`-` when
+  never checked). The three computations moved into shared
+  helpers the dashboard reads too, so the two pages can never
+  disagree; a remote source shows `-` for all three, since its
+  snapshot carries no endpoint config and no per-check records —
+  done in 0.60.0.
 
 ## Changelog
+
+- **0.60.0** — Latency budget, Check every, and Retries columns on
+  the static status page: the `--status-page` output gains the
+  same three columns the dashboard has, right after Latency and
+  before the latency percentiles, in the same order — the
+  endpoint's `max_latency_ms` (`-` when it has none), its
+  `check_interval_s` (`-` when it uses the global interval), and
+  the retries spent on the most recent recorded check (`-` when
+  never checked). The three computations moved into shared helpers
+  the dashboard reads too, so the two pages can never disagree; a
+  remote source shows `-` for all three, since its snapshot
+  carries no endpoint config and no per-check records.
 
 - **0.59.0** — Latency p50 / p95 / p99 column on the static status
   page: the `--status-page` output gains the same column the

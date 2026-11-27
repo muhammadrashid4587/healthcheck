@@ -191,6 +191,42 @@ def latency_percentiles_text(history, name, now=None):
             f"{pct['p99']:.1f} ms")
 
 
+def endpoint_latency_budget_text(ep):
+    """The endpoint's latency budget, or "-".
+
+    "500 ms" from `max_latency_ms`, "-" when the endpoint has no
+    budget. Shared by the dashboard and the static status page, so
+    the two can never disagree.
+    """
+    budget = ep.get("max_latency_ms")
+    return f"{budget:g} ms" if budget is not None else "-"
+
+
+def endpoint_check_interval_text(ep):
+    """The endpoint's own check interval, or "-".
+
+    "60 s" from `check_interval_s`, "-" when the endpoint uses the
+    global interval. Shared by the dashboard and the static status
+    page, so the two can never disagree.
+    """
+    interval = ep.get("check_interval_s")
+    return f"{interval:g} s" if interval is not None else "-"
+
+
+def endpoint_retries_text(cur):
+    """Retries spent on the endpoint's most recent check, or "-".
+
+    "1" when a first-attempt failure recovered on the retry, "0"
+    when the first attempt decided it, "-" when the endpoint was
+    never checked. `cur` is the endpoint's most recent recorded
+    check, or None. Shared by the dashboard and the static status
+    page, so the two can never disagree.
+    """
+    if cur is None:
+        return "-"
+    return str(cur.get("retries", 0))
+
+
 def status_snapshot(history, endpoints, now=None,
                     status_page_sources=None, sla_alerts=None,
                     cert_alerts=None, alert_records=None):
@@ -901,13 +937,9 @@ def render_dashboard(history, endpoints, now=None,
         week = f"{up_7d:.1f}%" if up_7d is not None else "-"
         month = f"{up_30d:.1f}%" if up_30d is not None else "-"
         pct_text = latency_percentiles_text(history, name, now=now)
-        budget = ep.get("max_latency_ms")
-        budget_text = f"{budget:g} ms" if budget is not None else "-"
-        interval = ep.get("check_interval_s")
-        interval_text = (f"{interval:g} s" if interval is not None
-                         else "-")
-        retries = cur.get("retries", 0) if cur is not None else None
-        retries_text = str(retries) if retries is not None else "-"
+        budget_text = endpoint_latency_budget_text(ep)
+        interval_text = endpoint_check_interval_text(ep)
+        retries_text = endpoint_retries_text(cur)
         # A breaching check still records its latency, so a slow
         # endpoint shows both numbers side by side: how slow it was
         # and what it was allowed to be.
