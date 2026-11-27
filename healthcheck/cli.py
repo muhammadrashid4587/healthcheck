@@ -71,6 +71,7 @@ def load_config(path):
     validate_maintenance_windows(endpoints)
     validate_sla_targets(endpoints)
     validate_endpoint_webhooks(endpoints)
+    validate_alert_thresholds(endpoints)
     validate_status_page_sources(cfg)
     if "flap_threshold" in cfg:
         validate_threshold(cfg["flap_threshold"])
@@ -257,6 +258,116 @@ def validate_endpoint_webhooks(endpoints):
             raise ValueError(
                 f"endpoint {ep['name']!r}: webhook must be an "
                 f"http(s) URL, not {url!r}")
+
+
+def validate_alert_thresholds(endpoints):
+    """Reject bad `alert_threshold` entries at config load.
+
+    An endpoint may declare how many consecutive failures must
+    pile up before its outage pages (default: the flap threshold
+    — see `endpoint_alert_threshold`). Any endpoint type can set
+    one, and the value must be a positive integer (a count of
+    checks, not a bool, not a float, not a string). Raises
+    ValueError with a clear message; the monitor refuses to start
+    rather than run with a threshold it can never reach.
+    """
+    for ep in endpoints:
+        value = ep.get("alert_threshold")
+        if value is None:
+            continue
+        if (isinstance(value, bool) or not isinstance(value, int)
+                or value < 1):
+            raise ValueError(
+                f"endpoint {ep['name']!r}: alert_threshold must be a "
+                f"positive integer, not {value!r}")
+
+
+def endpoint_alert_threshold(ep, flap_threshold_value):
+    """Consecutive failures before `ep`'s outage pages: its own
+    `alert_threshold` when set, else the flap threshold in effect.
+
+    The flap threshold still decides up/down state — an endpoint
+    flips to DOWN once it is reached — but the alert waits until
+    the run reaches this threshold, so a noisy endpoint can page
+    later than it flips (or, with a lower value, at confirmation,
+    like before)."""
+    value = ep.get("alert_threshold")
+    if value is not None:
+        return value
+    return flap_threshold_value
+
+
+def parse_alert_threshold(spec):
+    """Parse a --alert-threshold NAME=N spec.
+
+    The name is an endpoint in the config; the threshold is how
+    many consecutive failures must pile up before that endpoint's
+    outage pages (see `endpoint_alert_threshold`). A spec without
+    '=', an empty name, or a threshold that is not a positive
+    integer is rejected. Raises ValueError with a clear message.
+    """
+    if "=" not in spec:
+        raise ValueError(
+            f"--alert-threshold needs NAME=N, got {spec!r}")
+    name, threshold = spec.split("=", 1)
+    name = name.strip()
+    threshold = threshold.strip()
+    if not name or not threshold:
+        raise ValueError(
+            f"--alert-threshold needs a non-empty name and threshold, "
+            f"got {spec!r}")
+    try:
+        value = int(threshold)
+    except ValueError:
+        raise ValueError(
+            f"--alert-threshold threshold must be a positive integer, "
+            f"got {threshold!r}") from None
+    if str(value) != threshold or value < 1:
+        raise ValueError(
+            f"--alert-threshold threshold must be a positive integer, "
+            f"got {threshold!r}")
+    return name, value
+
+
+def apply_alert_threshold_overrides(cfg, args):
+    """Apply --alert-threshold flags to the config's endpoints.
+
+    Each flag sets (or replaces) the endpoint's `alert_threshold` —
+    the flag wins over the config file, like --flap-threshold and
+    --webhook-url do for their settings. A flag naming an endpoint
+    that is not in the config is rejected, so a typo does not
+    silently do nothing. `args` may be a namespace without the
+    attribute (tests build their own) — then there is nothing to
+    apply. Raises ValueError with a clear message.
+    """
+    specs = getattr(args, "alert_threshold", None) or []
+    if not specs:
+        return
+    by_name = {ep["name"]: ep for ep in cfg.get("endpoints", [])}
+    for spec in specs:
+        name, value = parse_alert_threshold(spec)
+        if name not in by_name:
+            raise ValueError(
+                f"--alert-threshold names unknown endpoint {name!r}")
+        by_name[name]["alert_threshold"] = value
+
+
+def resolve_alert_thresholds(cfg, args):
+    """Fill in every endpoint's effective `alert_threshold`.
+
+    An endpoint without one pages at the flap threshold in effect
+    (the --flap-threshold flag, the config file's flap_threshold,
+    or the default 3), so the dashboard and GET /api/status can
+    read the number straight off the endpoint instead of
+    re-deriving the default — and a SIGHUP reload that changes
+    the flap threshold re-resolves it the same way. Runs after
+    the --alert-threshold flags are applied, so a flag still wins
+    over the default for its endpoint.
+    """
+    default = flap_threshold(cfg, args)
+    for ep in cfg.get("endpoints", []):
+        if ep.get("alert_threshold") is None:
+            ep["alert_threshold"] = default
 
 
 def validate_check_intervals(endpoints):
@@ -958,7 +1069,11 @@ def check_all(endpoints, history, timeout=5.0, alerter=None,
     threshold the failure is recorded as unconfirmed — logged, but no
     alert, no uptime penalty, and the endpoint stays UP on the
     dashboard. A success resets the counter; a success after a
-    confirmed outage is a recovery. Callers running repeated rounds
+    confirmed outage is a recovery. The alert itself waits for the
+    endpoint's `alert_threshold` (see `endpoint_alert_threshold`):
+    an endpoint whose alert_threshold is above the flap threshold
+    flips DOWN at the flap threshold but only pages once the run
+    reaches its alert_threshold. Callers running repeated rounds
     must pass one shared detector; a fresh default (threshold 3) is
     created when none is given, which is only correct for a single
     round such as --once.
@@ -1019,8 +1134,21 @@ def check_all(endpoints, history, timeout=5.0, alerter=None,
             # failure looks like "still up" to it, so nothing fires
             # until the threshold is reached. The Nth consecutive
             # failure and the success that recovers from it are real
-            # transitions and alert exactly as before.
-            effective = result if (result.ok or outcome.confirmed_down) \
+            # transitions and alert exactly as before. The alert
+            # threshold decides *when* the confirmed outage pages:
+            # an endpoint whose alert_threshold is above the flap
+            # threshold flips DOWN at the flap threshold but only
+            # alerts once the run reaches its alert_threshold — an
+            # endpoint that recovers before that never pages at
+            # all, and no recovery alert follows either, since the
+            # alerter never saw it go down. An endpoint without
+            # one alerts at confirmation, like before.
+            alert_at = endpoint_alert_threshold(
+                ep, flap_detector.threshold)
+            alertable = (result.ok or (outcome.confirmed_down
+                                       and outcome.consecutive_failures
+                                       >= alert_at))
+            effective = result if alertable \
                 else dataclasses.replace(result, ok=True)
             alerter.notify(effective)
         if result.ok:
@@ -1241,6 +1369,8 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
                         apply_expect_status_overrides(new_cfg, args)
                         apply_max_latency_overrides(new_cfg, args)
                         apply_check_interval_overrides(new_cfg, args)
+                        apply_alert_threshold_overrides(new_cfg, args)
+                        resolve_alert_thresholds(new_cfg, args)
                     except ValueError as exc:
                         # A flag naming an endpoint the reloaded file
                         # dropped: keep the running config, like a
@@ -1403,9 +1533,19 @@ def main(argv=None):
                              "endpoint changes state (overrides the "
                              "config file's webhook_url)")
     parser.add_argument("--flap-threshold", type=int, default=None,
-                        help="alert only after this many consecutive "
-                             "failed checks (overrides the config "
-                             "file's flap_threshold, default 3)")
+                        help="confirm an outage after this many "
+                             "consecutive failed checks (overrides the "
+                             "config file's flap_threshold, default 3) — "
+                             "also the default alert_threshold, the "
+                             "number of failures before an endpoint pages")
+    parser.add_argument("--alert-threshold", default=None,
+                        action="append", metavar="NAME=N",
+                        help="page the named endpoint only after N "
+                             "consecutive failed checks (overrides the "
+                             "config file's alert_threshold for that "
+                             "endpoint; repeatable) — the endpoint still "
+                             "flips DOWN at the flap threshold, the alert "
+                             "just waits for N")
     parser.add_argument("--expect-status", default=None,
                         action="append", metavar="NAME=STATUS",
                         help="require this exact HTTP status code from "
@@ -1520,6 +1660,8 @@ def main(argv=None):
         apply_expect_status_overrides(cfg, args)
         apply_max_latency_overrides(cfg, args)
         apply_check_interval_overrides(cfg, args)
+        apply_alert_threshold_overrides(cfg, args)
+        resolve_alert_thresholds(cfg, args)
     except ValueError as exc:
         parser.error(str(exc))
     history = None

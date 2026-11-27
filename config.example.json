@@ -2,6 +2,7 @@
   "endpoints": [
     {
       "expect_status": 200,
+      "alert_threshold": 5,
       "headers": {
         "X-Api-Key": "example-key"
       },

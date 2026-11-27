@@ -13,7 +13,7 @@ certificate, and the alert shows on the dashboard and in
 GET /api/status too.
 """
 
-__version__ = "0.53.0"
+__version__ = "0.54.0"
 
 from .alerts import (CertExpiryAlerter, SlaBreachAlerter, WebhookAlerter,
                      alert_payload, cert_expiry_alert_payload,
@@ -25,17 +25,19 @@ from .checker import (ALLOWED_HTTP_METHODS, DEFAULT_CERT_EXPIRY_WARN_DAYS,
                       check_http, check_tcp, fetch_cert_expiry,
                       maintenance_result, normalize_headers,
                       normalize_http_method, parse_cert_not_after)
-from .cli import (apply_check_interval_overrides, apply_max_latency_overrides,
-                  dry_run_check, endpoint_interval, format_check_line,
-                  install_reload_handler, load_status_page_source,
-                  make_cert_alerter, make_sla_alerter,
-                  merged_status_page_sources, monitor_loop,
-                  parse_check_interval, parse_max_latency, reload_config,
+from .cli import (apply_alert_threshold_overrides,
+                  apply_check_interval_overrides, apply_max_latency_overrides,
+                  dry_run_check, endpoint_alert_threshold, endpoint_interval,
+                  format_check_line, install_reload_handler,
+                  load_status_page_source, make_cert_alerter,
+                  make_sla_alerter, merged_status_page_sources, monitor_loop,
+                  parse_alert_threshold, parse_check_interval,
+                  parse_max_latency, reload_config, resolve_alert_thresholds,
                   retry_enabled, select_check_targets,
-                  validate_cert_expiry_warnings, validate_check_intervals,
-                  validate_http_methods, validate_latency_budgets,
-                  validate_request_headers, validate_retry_settings,
-                  validate_status_page_sources)
+                  validate_alert_thresholds, validate_cert_expiry_warnings,
+                  validate_check_intervals, validate_http_methods,
+                  validate_latency_budgets, validate_request_headers,
+                  validate_retry_settings, validate_status_page_sources)
 from .digest import (DEFAULT_DIGEST_INTERVAL_SECONDS, DigestAlerter,
                      build_digest, render_digest_email,
                      resolve_smtp_config, send_digest_email,
@@ -71,6 +73,7 @@ __all__ = [
     "DEFAULT_THRESHOLD",
     "History",
     "active_window",
+    "apply_alert_threshold_overrides",
     "apply_check_interval_overrides",
     "apply_max_latency_overrides",
     "breaches",
@@ -83,6 +86,7 @@ __all__ = [
     "check_http",
     "check_tcp",
     "dry_run_check",
+    "endpoint_alert_threshold",
     "endpoint_interval",
     "endpoint_status",
     "fetch_cert_expiry",
@@ -103,6 +107,7 @@ __all__ = [
     "monitor_loop",
     "monthly_detail",
     "monthly_uptime",
+    "parse_alert_threshold",
     "parse_cert_not_after",
     "parse_check_interval",
     "parse_max_latency",
@@ -118,6 +123,7 @@ __all__ = [
     "render_sla_report_csv",
     "render_sla_report_json",
     "render_status_page",
+    "resolve_alert_thresholds",
     "resolve_smtp_config",
     "retry_enabled",
     "latency_sparkline",
@@ -131,6 +137,7 @@ __all__ = [
     "status_snapshot",
     "summarize_windows",
     "uptime_snapshot",
+    "validate_alert_thresholds",
     "validate_cert_expiry_warnings",
     "validate_check_intervals",
     "validate_digest_config",

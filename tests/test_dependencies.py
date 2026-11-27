@@ -236,17 +236,20 @@ class DashboardSkipTests(unittest.TestCase):
         self.assertIn("<td>db</td>", page)
         # Skipped checks show "-" uptime, not 0%. The Down since
         # column sits between Status and Fail streak, the Fail
-        # streak column between that and Method, the Method column
+        # streak column between that and Alert at, the Alert at
+        # column between that and Method, the Method column
         # between that and Headers, the Headers column between that
         # and HTTP status, the HTTP status column between that and
         # Cert expires, and Cert expires between that and Depends
         # on: a skipped check never ran, so it has no method to
         # show, sends no headers, never returned a status, never
         # read a certificate, and is not down, so all six are "-"
-        # — except the streak, which is a count and shows 0.
+        # — except the streak, which is a count and shows 0, and
+        # Alert at, which is the configured threshold (3, the
+        # default) and shows even when the endpoint never ran.
         self.assertIn("<td class=\"skipped\">SKIPPED</td><td>-</td>"
-                      "<td>0</td><td>-</td><td>-</td><td>-</td><td>-</td>"
-                      "<td>db</td><td>-</td>",
+                      "<td>0</td><td>3</td><td>-</td><td>-</td><td>-</td>"
+                      "<td>-</td><td>db</td><td>-</td>",
                       page)
 
 

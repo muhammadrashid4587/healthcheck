@@ -38,6 +38,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from .checker import (DEFAULT_CERT_EXPIRY_WARN_DAYS, cert_expiry_days,
                       cert_expiring_soon)
+from .flap import DEFAULT_THRESHOLD
 from .maintenance import summarize_windows
 from .sla import parse_month, sla_report, sla_report_payload
 
@@ -152,9 +153,12 @@ def status_snapshot(history, endpoints, now=None,
     "consecutive_failures" is how many failed checks in a row the
     endpoint has right now (0 when it is up or was never checked)
     — the same run `down_since` starts, so the count and the outage
-    clock can never disagree; an operator reads it against the
-    configured `flap_threshold` (3 by default) to see how close a
-    still-UP endpoint is to being confirmed down.
+    clock can never disagree; "alert_threshold" is the endpoint's
+    own `alert_threshold` when set, else the flap threshold in
+    effect (3 by default) — an operator reads the streak against
+    it to see how close a still-UP endpoint is to paging: the
+    endpoint flips DOWN at the flap threshold, but the alert only
+    fires once the run reaches its alert_threshold.
     "recent_incidents" is the endpoint's recent outages, newest
     first (at most 5) — each {"start", "end", "checks", "ongoing",
     "duration_s"}, grouped the same way as the static status
@@ -281,6 +285,10 @@ def status_snapshot(history, endpoints, now=None,
             "sla_breach_alerted_at": alerted_at,
             "down_since": history.down_since(name),
             "consecutive_failures": history.consecutive_failures(name),
+            "alert_threshold": (
+                ep.get("alert_threshold")
+                if ep.get("alert_threshold") is not None
+                else DEFAULT_THRESHOLD),
             "recent_incidents": history.recent_incidents(name, now=now),
             "duration_histogram": history.incident_duration_histogram(
                 name, limit=5, now=now),
@@ -488,7 +496,8 @@ def render_metrics(history, endpoints, now=None):
       clock can never disagree. Always present, even at 0: a
       never-checked endpoint is 0, and a success resets the run
       to 0, so the series is safe to alert on (e.g. alert when it
-      reaches the configured flap threshold).
+      reaches the endpoint's ``alert_threshold`` — the flap
+      threshold by default).
     - ``healthcheck_uptime_ratio`` (gauge): share of checks that
       were up, all-time, plus ``_24h``, ``_7d``, and ``_30d``
       variants over the last 24 hours / 7 days / 30 days. Omitted
@@ -693,7 +702,12 @@ def render_dashboard(history, endpoints, now=None,
     "12d (soon)" inside its warning window, "expired" once it
     has lapsed, "-" when no certificate was ever seen — plain
     http / tcp, never checked, or a check that could not read the
-    peer certificate). When `cert_alerts` carries a record for the
+    peer certificate). The Alert at column next to Fail streak is
+    the endpoint's `alert_threshold` — its own value when set,
+    else the flap threshold (3 by default): the streak has to
+    reach that number before the outage pages, so the two columns
+    together say how close the endpoint is to paging. When
+    `cert_alerts` carries a record for the
     endpoint's current certificate, the time its expiry alert
     fired is appended ("5d (soon) alerted 06:12"). The SLA breach column
     shows "BREACH -X.Xpp" for an endpoint below its `sla_target`
@@ -812,7 +826,16 @@ def render_dashboard(history, endpoints, now=None,
         # can never disagree. 0 when the endpoint is up or was
         # never checked; a still-UP endpoint with 1 or 2 is that
         # many failures away from the flap threshold confirming it.
+        # The Alert at column next to it is the endpoint's own
+        # `alert_threshold` (the flap threshold, 3 by default, when
+        # it sets none): the streak has to reach that number before
+        # the outage pages, so the two columns together say how
+        # close the endpoint is to paging.
         streak_text = str(history.consecutive_failures(name))
+        alert_at = ep.get("alert_threshold")
+        if alert_at is None:
+            alert_at = DEFAULT_THRESHOLD
+        alert_text = str(alert_at)
         # When the endpoint's TLS certificate expires: whole days
         # left, "expired" once it has lapsed, "(soon)" inside the
         # endpoint's warning window (30 days by default), "-" when
@@ -847,6 +870,7 @@ def render_dashboard(history, endpoints, now=None,
             f"<td class=\"{cls}\">{status}</td>"
             f"<td>{html.escape(down_text)}</td>"
             f"<td>{html.escape(streak_text)}</td>"
+            f"<td>{html.escape(alert_text)}</td>"
             f"<td>{html.escape(ep.get('method') or '-')}</td>"
             f"<td>{html.escape(headers_text)}</td>"
             f"<td>{html.escape(http_status)}</td>"
@@ -863,7 +887,7 @@ def render_dashboard(history, endpoints, now=None,
             f"<td>{html.escape(sla_text)}</td>"
             f"<td>{last}</td></tr>"
         )
-    body = "\n".join(rows) or "<tr><td colspan=\"23\">No endpoints configured.</td></tr>"
+    body = "\n".join(rows) or "<tr><td colspan=\"24\">No endpoints configured.</td></tr>"
     if status_page_sources:
         items = "".join(
             f"<li>{html.escape(src['label'])} — "
@@ -877,7 +901,7 @@ def render_dashboard(history, endpoints, now=None,
 <html><head><meta charset="utf-8"><title>healthcheck</title>
 <style>body{{font-family:sans-serif;max-width:720px;margin:2em auto}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccc;padding:6px 10px;text-align:left}}.up{{color:green;font-weight:bold}}.down{{color:red;font-weight:bold}}.skipped{{color:#b8860b;font-weight:bold}}.maintenance{{color:#6a5acd;font-weight:bold}}</style>
 </head><body><h1>healthcheck</h1>
-<table><tr><th>Endpoint</th><th>Status</th><th>Down since</th><th>Fail streak</th><th>Method</th><th>Headers</th><th>HTTP status</th><th>Cert expires</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Uptime 30d</th><th>Latency</th><th>Latency budget</th><th>Check every</th><th>Retries</th><th>Latency p50 / p95 / p99</th><th>Latency history</th><th>Last error</th><th>SLA breach</th><th>Last check</th></tr>
+<table><tr><th>Endpoint</th><th>Status</th><th>Down since</th><th>Fail streak</th><th>Alert at</th><th>Method</th><th>Headers</th><th>HTTP status</th><th>Cert expires</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Uptime 30d</th><th>Latency</th><th>Latency budget</th><th>Check every</th><th>Retries</th><th>Latency p50 / p95 / p99</th><th>Latency history</th><th>Last error</th><th>SLA breach</th><th>Last check</th></tr>
 {body}</table>
 {incidents_html}{sources_html}<p>Rendered {time.strftime('%Y-%m-%d %H:%M:%S')} — reload to update.</p></body></html>"""
 

@@ -74,7 +74,11 @@ endpoint, and serves a small status dashboard over `http.server`.
 - Per-endpoint uptime % and recent check history.
 - Flap detection: an endpoint only flips to DOWN (and only alerts)
   after 3 consecutive failed checks by default — a single blip is
-  logged, not paged. The threshold is configurable per config.
+  logged, not paged. The threshold is configurable per config, and
+  each endpoint can set its own `alert_threshold` to page later
+  than it flips (a noisy endpoint that flips DOWN at 3 failures
+  can wait until 5 before it pages; one that recovers before its
+  threshold never pages at all).
 - Retry once before a failure counts: when a check fails it is
   immediately retried once, and only a second consecutive failure
   counts as DOWN for flap, alert, and uptime purposes — a blip
@@ -185,7 +189,7 @@ endpoint, and serves a small status dashboard over `http.server`.
 - Config hot-reload: while the monitor is running, edit
   `config.json` and send SIGHUP (`kill -HUP <pid>`); the new
   endpoints, check interval, per-endpoint check intervals,
-  webhook, flap threshold, and status
+  webhook, flap threshold, alert thresholds, and status
   page sources take effect before the next check round, and the
   dashboard follows.
   A bad edit never takes the monitor down — it is logged and the
@@ -266,9 +270,9 @@ SIGHUP to reload it without restarting:
 
 ```sh
 kill -HUP <pid>   # new endpoints, interval, per-endpoint check
-                  # intervals, webhook, flap threshold, and
-                  # status page sources apply before the next
-                  # check round
+                  # intervals, webhook, flap threshold, alert
+                  # thresholds, and status page sources apply
+                  # before the next check round
 ```
 
 The reloaded config is validated the same way as at startup: a
@@ -322,6 +326,27 @@ normally without it.
   UP on the dashboard. A success at any point resets the count; a
   success after a confirmed outage is a recovery. Must be a
   positive integer. The `--flap-threshold` flag overrides it.
+  The flap threshold also decides up/down state only — when the
+  outage pages is the endpoint's `alert_threshold` (below), which
+  defaults to this threshold.
+- `alert_threshold` — consecutive failed checks before an
+  endpoint's outage pages (optional, either type, e.g. `5`): an
+  endpoint with `alert_threshold` 5 and the default flap
+  threshold 3 flips DOWN on the third failure but only alerts on
+  the fifth — a noisy endpoint can page later than it flips, and
+  one that recovers before the fifth never pages at all (and no
+  recovery alert follows, since it never paged). A value at or
+  below the flap threshold alerts at confirmation, like before.
+  Must be a positive integer; a bad value is rejected at config
+  load. The `--alert-threshold NAME=N` flag (repeatable) sets or
+  replaces it for one endpoint, and the flag wins over the config
+  file; a flag naming an endpoint that is not in the config is
+  rejected. A SIGHUP reload picks up `alert_threshold` changes
+  from the edited file (a bad value keeps the running config),
+  and re-applies the flags. The dashboard gains an Alert at
+  column and `GET /api/status` gains `alert_threshold` per
+  endpoint, next to the Fail streak / `consecutive_failures` they
+  are read against.
 - `retry_on_failure` — retry a failed check once before it counts
   (default true, either type, or globally in the config). When a
   check fails it is immediately retried once, on the same endpoint
@@ -571,7 +596,12 @@ checks in a row the endpoint has right now (the Fail streak column —
 `0` when it is up or was never checked, so a still-UP endpoint with
 1 or 2 shows how close it is to the flap threshold confirming it
 down; it is the same run Down since starts from, so the two can
-never disagree), the HTTP method
+never disagree), and how many failures in a row it takes before the
+endpoint pages (the Alert at column — the endpoint's own
+`alert_threshold`, or the flap threshold, 3 by default, when it
+sets none — so the streak next to it says how close the endpoint is
+to paging: the endpoint flips DOWN at the flap threshold, but the
+alert only fires once the streak reaches Alert at), the HTTP method
 the endpoint is checked with (`HEAD`, `POST`, `-` when it uses the
 default GET — TCP endpoints show `-` too), the names of the extra
 request headers the check sends (`Authorization`, `X-Api-Key`, `-`
@@ -681,8 +711,13 @@ in the current run of failures, unconfirmed ones included — or
 (how many failed checks in a row the endpoint has right now — `0`
 when it is up or was never checked — the same run `down_since`
 starts, so the count and the outage clock can never disagree;
-read it against the configured `flap_threshold`, 3 by default, to
-see how close a still-UP endpoint is to being confirmed down),
+read it against the endpoint's `alert_threshold` to see how close
+a still-UP endpoint is to paging — the endpoint flips DOWN at the
+flap threshold, 3 by default, but the alert only fires once the
+streak reaches `alert_threshold`, which is the endpoint's own
+value when set and the flap threshold otherwise), `alert_threshold`
+(the consecutive failures before the endpoint's outage pages — its
+own `alert_threshold` when set, else the flap threshold in effect),
 `recent_incidents`
 (the endpoint's recent outages, newest first, at most 5 — each
 `{"start", "end", "checks", "ongoing", "duration_s"}`, grouped the
@@ -726,7 +761,8 @@ lists can never disagree; always present, even at 0), and
 checks in a row the endpoint has right now — the same run
 `down_since` starts from, so the gauge and the outage clock can
 never disagree; always present, even at 0, so a Prometheus
-server can alert when it reaches the flap threshold). The same
+server can alert when it reaches the endpoint's `alert_threshold`
+— the flap threshold, 3 by default, when the endpoint sets none). The same
 exclusion rules apply as everywhere else: skipped and maintenance
 checks never ran, so they are omitted from the up gauge and the
 totals and carry no latency; a failure below the flap threshold
@@ -1276,9 +1312,40 @@ make test   # python3 -m unittest discover -s tests -v
   same `History.consecutive_failures()` figure `GET /api/status`
   reports, so the gauge and the API can never disagree — done in
   0.53.0.
+- [x] Per-endpoint alert threshold (`alert_threshold`): an
+  endpoint can declare how many consecutive failures must pile
+  up before its outage pages, independent of the flap threshold
+  that flips it DOWN — a noisy endpoint can flip DOWN at 3
+  failures but wait until 5 before it pages, and one that
+  recovers before its threshold never pages at all (and no
+  recovery alert follows, since it never paged). An endpoint
+  without one alerts at confirmation, like before; a value at
+  or below the flap threshold alerts at confirmation too. Must
+  be a positive integer, validated at load and on SIGHUP reload;
+  `--alert-threshold NAME=N` (repeatable, flag wins) sets it per
+  endpoint. The dashboard gains an Alert at column and `GET
+  /api/status` gains `alert_threshold` per endpoint, next to the
+  Fail streak / `consecutive_failures` they are read against —
+  done in 0.54.0.
 
 ## Changelog
 
+- **0.54.0** — Per-endpoint alert threshold: an endpoint can set
+  `alert_threshold` (e.g. 5) in the config, and its outage only
+  pages once that many consecutive failures have piled up — the
+  flap threshold still flips it DOWN (at 3 by default), but the
+  webhook / digest alert waits for the alert threshold, so a
+  noisy endpoint pages later than it flips and one that recovers
+  before its threshold never pages at all (and no recovery alert
+  follows, since the alerter never saw it go down). An endpoint
+  without one defaults to the flap threshold in effect and alerts
+  at confirmation, like before; a value at or below the flap
+  threshold alerts at confirmation too. Validated at config load
+  (a positive integer) and on SIGHUP reload; `--alert-threshold
+  NAME=N` (repeatable, flag wins) sets or replaces it per
+  endpoint. The dashboard gains an Alert at column and `GET
+  /api/status` gains `alert_threshold` per endpoint, next to the
+  Fail streak / `consecutive_failures` they are read against.
 - **0.53.0** — Consecutive-failures gauge in `GET /metrics`:
   `healthcheck_consecutive_failures` exposes the current run of
   failed checks per endpoint, from the same
