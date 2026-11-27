@@ -394,10 +394,11 @@ class RenderTests(unittest.TestCase):
             page)
         self.assertIn("<td>20.0 / 30.0 / 30.0 ms</td>", page)
         # ghost's row ends Latency / budget / interval / retries /
-        # percentiles / sparkline / last error / last check, all "-".
+        # percentiles / sparkline / last error / SLA breach / last
+        # check, all "-".
         self.assertIn(
             "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>"
-            "<td>-</td><td>-</td><td>-</td></tr>",
+            "<td>-</td><td>-</td><td>-</td><td>-</td></tr>",
             page)
 
     def test_last_error_column(self):
@@ -429,7 +430,7 @@ class RenderTests(unittest.TestCase):
             now=BASE + 200)
         self.assertIn(
             "<th>Latency history</th><th>Last error</th>"
-            "<th>Last check</th>",
+            "<th>SLA breach</th><th>Last check</th>",
             page)
         # web recovered, but its last error is still shown.
         self.assertIn("<td>connection refused</td>", page)
@@ -439,14 +440,70 @@ class RenderTests(unittest.TestCase):
         self.assertNotIn("<script>", page)
         # plain never failed and ghost was never checked: "-".
         # plain's row ends with its last error "-" and then its
-        # last check time; ghost's row ends with "-" throughout.
+        # SLA breach "-" and its last check time; ghost's row
+        # ends with "-" throughout.
         self.assertRegex(
             page,
-            r"<td>-</td><td>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}</td></tr>")
+            r"<td>-</td><td>-</td><td>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}</td></tr>")
         self.assertIn(
             "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>"
-            "<td>-</td><td>-</td><td>-</td></tr>",
+            "<td>-</td><td>-</td><td>-</td><td>-</td></tr>",
             page)
+
+    def test_sla_breach_column(self):
+        # The static page carries the same SLA breach column as
+        # the dashboard, right after Last error and before Last
+        # check — from the same shared helper the dashboard
+        # reads, so the two pages can never disagree. "BREACH
+        # -X.Xpp" when the endpoint is below its sla_target in
+        # the page's calendar month; "-" when it has no target,
+        # no data in the month, or meets the target.
+        hist = History()
+        for i in range(9):
+            hist.record(_result("api", True, at=BASE + i * 60))
+        hist.record(_result("api", False, at=BASE + 9 * 60))
+        hist.record(_result("web", True, at=BASE))
+        hist.record(_result("old", False, at=BASE - 40 * 86400))
+        page = render_status_page(
+            hist,
+            [{"name": "api", "type": "http",
+              "url": "http://api.example.com", "sla_target": 99.9},
+             {"name": "web", "type": "http",
+              "url": "http://example.com", "sla_target": 99.9},
+             {"name": "plain", "type": "http",
+              "url": "http://plain.example.com"},
+             {"name": "old", "type": "http",
+              "url": "http://old.example.com", "sla_target": 99.9},
+             {"name": "ghost", "type": "http",
+              "url": "http://ghost.example.com"}],
+            now=BASE + 200)
+        self.assertIn(
+            "<th>Last error</th><th>SLA breach</th><th>Last check</th>",
+            page)
+        # api: 9/10 up in the page's month against 99.9 → breach.
+        self.assertIn("<td>BREACH -9.9pp</td>", page)
+        self.assertEqual(page.count("BREACH"), 1)
+        # web meets its target, plain has no target, old has no
+        # data in the page's month, ghost was never checked: all
+        # "-" in the SLA breach column, so the count above is the
+        # only breach on the page.
+
+    def test_extra_source_sla_breach_column_is_dash(self):
+        # An extra source's endpoints carry no config, so they
+        # have no SLA target and always show "-" — even a file
+        # source whose recorded history has failures in the
+        # page's month.
+        other = History()
+        for i in range(9):
+            other.record(_result("web", True, at=BASE + i * 60))
+        other.record(_result("web", False, at=BASE + 9 * 60))
+        page = render_status_page(
+            History(), [], now=BASE + 200,
+            extra_sources=[("eu-west", other,
+                            [{"name": "web"}])])
+        self.assertIn("<h2>eu-west</h2>", page)
+        self.assertIn("<th>SLA breach</th>", page)
+        self.assertNotIn("BREACH", page)
 
     def test_remote_source_last_error_column_is_dash(self):
         # A remote source's snapshot carries no per-check records,
@@ -458,10 +515,10 @@ class RenderTests(unittest.TestCase):
                             [{"name": "web"}])])
         self.assertIn("<h2>remote</h2>", page)
         self.assertIn("<th>Latency history</th><th>Last error</th>"
-                      "<th>Last check</th>", page)
+                      "<th>SLA breach</th><th>Last check</th>", page)
         self.assertIn(
             "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>"
-            "<td>-</td><td>-</td><td>-</td></tr>",
+            "<td>-</td><td>-</td><td>-</td><td>-</td></tr>",
             page)
 
     def test_latency_budget_check_every_retries_columns(self):
@@ -497,10 +554,11 @@ class RenderTests(unittest.TestCase):
         # retry.
         self.assertIn("<td>-</td><td>-</td><td>0</td>", page)
         # ghost's row ends Latency / budget / interval / retries /
-        # percentiles / sparkline / last check, all "-".
+        # percentiles / sparkline / last error / SLA breach / last
+        # check, all "-".
         self.assertIn(
             "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>"
-            "<td>-</td><td>-</td></tr>",
+            "<td>-</td><td>-</td><td>-</td><td>-</td></tr>",
             page)
 
     def test_remote_source_percentiles_column_is_dash(self):
@@ -516,12 +574,12 @@ class RenderTests(unittest.TestCase):
         self.assertIn("<th>Latency budget</th><th>Check every</th>"
                       "<th>Retries</th>", page)
         # A remote source's row ends Latency / budget / interval /
-        # retries / percentiles / sparkline / last error / last
-        # check, all "-": its snapshot carries no endpoint config
-        # and no per-check records.
+        # retries / percentiles / sparkline / last error / SLA
+        # breach / last check, all "-": its snapshot carries no
+        # endpoint config and no per-check records.
         self.assertIn(
             "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>"
-            "<td>-</td><td>-</td><td>-</td></tr>",
+            "<td>-</td><td>-</td><td>-</td><td>-</td></tr>",
             page)
 
     def test_extra_source_file_keeps_status_and_cert(self):

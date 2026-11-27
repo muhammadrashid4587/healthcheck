@@ -237,8 +237,8 @@ class SlaReportTests(unittest.TestCase):
 
 
 class VersionTests(unittest.TestCase):
-    def test_version_is_0_61_0(self):
-        self.assertEqual(__version__, "0.61.0")
+    def test_version_is_0_62_0(self):
+        self.assertEqual(__version__, "0.62.0")
 
 
 if __name__ == "__main__":

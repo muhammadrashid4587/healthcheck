@@ -16,7 +16,13 @@ status and Cert expires columns after the Cooldown column — plus a
 recent-incidents list
 per endpoint, derived from the persisted check history, and each
 endpoint's per-incident duration histogram over those same
-incidents. The Method column is the HTTP method the endpoint is
+incidents, plus an SLA breach column after the Last error column
+("BREACH -X.Xpp" when the endpoint is below its `sla_target` in
+the page's calendar month, "-" otherwise — from the same
+`endpoint_sla_breach_text` the dashboard reads, so the two pages
+can never disagree; a static snapshot carries no alert records,
+so no "alerted" time is appended, and an extra source's
+endpoints carry no config, so they always show "-"). The Method column is the HTTP method the endpoint is
 checked with ("-" when it uses the default GET, and for TCP
 endpoints); Headers lists the names of the extra request headers
 the check sends, never the values ("-" when it sends none); HTTP
@@ -70,7 +76,7 @@ from .server import (endpoint_cert_expiry_text, endpoint_check_interval_text,
                      endpoint_headers_text, endpoint_http_status_text,
                      endpoint_last_error_text,
                      endpoint_latency_budget_text, endpoint_method_text,
-                     endpoint_retries_text,
+                     endpoint_retries_text, endpoint_sla_breach_text,
                      format_duration, latency_percentiles_text,
                      latency_sparkline)
 
@@ -262,6 +268,18 @@ def _render_source(history, endpoints, generated, label=None):
         # per-check records — and a file source shows its recorded
         # failure, like a local one.
         last_error_text = endpoint_last_error_text(history, name)
+        # SLA breach, right after Last error and before Last
+        # check, exactly as the dashboard shows it — from the
+        # same helper the dashboard reads, so the two pages can
+        # never disagree. "BREACH -X.Xpp" when the endpoint is
+        # below its `sla_target` in the page's calendar month
+        # ("-" when it has no target, no data in the month, or
+        # meets the target). A static snapshot carries no alert
+        # records, so no "alerted" time is appended, unlike the
+        # live dashboard; an extra source's endpoints carry no
+        # config, so they have no target and always show "-".
+        sla_text = endpoint_sla_breach_text(history, endpoints, name,
+                                            now=generated)
         rows.append(
             f"<tr><td>{html.escape(name)}</td>"
             f"<td class=\"{cls}\">{status}{status_detail}</td>"
@@ -279,7 +297,8 @@ def _render_source(history, endpoints, generated, label=None):
             f"<td>{html.escape(retries_text)}</td>"
             f"<td>{html.escape(pct_text)}</td>"
             f"<td>{latency_sparkline(history, name)}</td>"
-            f"<td>{html.escape(last_error_text)}</td><td>{last}</td></tr>"
+            f"<td>{html.escape(last_error_text)}</td>"
+            f"<td>{html.escape(sla_text)}</td><td>{last}</td></tr>"
         )
         incidents = recent_incidents(history, name, now=generated)
         if incidents:
@@ -310,7 +329,7 @@ def _render_source(history, endpoints, generated, label=None):
                 f"<h3>{html.escape(name)}</h3><ul>{''.join(items)}</ul>"
                 f"<p>Duration histogram: {buckets}</p>")
     body = "\n".join(rows) or \
-        "<tr><td colspan=\"22\">No endpoints configured.</td></tr>"
+        "<tr><td colspan=\"23\">No endpoints configured.</td></tr>"
     if down_count:
         banner = (f"<p class=\"banner down\">{down_count} endpoint"
                   f"{'s' if down_count != 1 else ''} down</p>")
@@ -329,6 +348,7 @@ def _render_source(history, endpoints, generated, label=None):
         "<th>Latency budget</th><th>Check every</th><th>Retries</th>"
         "<th>Latency p50 / p95 / p99</th>"
         "<th>Latency history</th><th>Last error</th>"
+        "<th>SLA breach</th>"
         "<th>Last check</th></tr>\n"
         f"{body}</table>")
     if label is None:

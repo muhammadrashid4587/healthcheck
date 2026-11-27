@@ -240,6 +240,42 @@ def endpoint_last_error_text(history, name):
     return history.last_error(name) or "-"
 
 
+def endpoint_sla_breach_text(history, endpoints, name, now=None,
+                             sla_alerts=None):
+    """The endpoint's SLA breach this month, or "-".
+
+    "BREACH -X.Xpp" when the endpoint is below its `sla_target`
+    in the current calendar month — the same `sla_report` the
+    `--sla-report` text report and `GET /api/sla` build on, so
+    the page and the report can never disagree — "-" otherwise:
+    no target, no data in the month, or meeting the target. When
+    `sla_alerts` carries a record for this endpoint for this
+    month, the time its breach alert fired is appended
+    ("BREACH -9.9pp alerted 12:30"); a static snapshot carries
+    no alert records, so it shows just the breach. `now` pins
+    the month (epoch seconds, defaulting to the current time);
+    an extra source's endpoints carry no config, so they have no
+    target and always show "-". Shared by the dashboard and the
+    static status page, so the two can never disagree.
+    """
+    ref = time.time() if now is None else now
+    current = time.localtime(ref)
+    month = f"{current.tm_year:04d}-{current.tm_mon:02d}"
+    row = next((r for r in sla_report(history, endpoints,
+                                      current.tm_year, current.tm_mon)
+                if r["name"] == name), {})
+    if row.get("met") is not False:
+        return "-"
+    text = f"BREACH -{row['shortfall_pct']:.1f}pp"
+    alert = (sla_alerts or {}).get(name) or {}
+    if alert.get("month") == month:
+        alerted = alert.get("alerted_at")
+        if alerted is not None:
+            text += (" alerted " + time.strftime(
+                "%H:%M", time.localtime(alerted)))
+    return text
+
+
 def status_snapshot(history, endpoints, now=None,
                     status_page_sources=None, sla_alerts=None,
                     cert_alerts=None, alert_records=None):
@@ -913,9 +949,6 @@ def render_dashboard(history, endpoints, now=None,
     the API and the text report use, so the dashboard can never
     disagree with them about a window.
     """
-    current = time.localtime()
-    report = {row["name"]: row for row in sla_report(
-        history, endpoints, current.tm_year, current.tm_mon)}
     uptime_snap = {row["name"]: row for row in uptime_snapshot(
         history, endpoints, now=now)["endpoints"]}
     rows = []
@@ -962,20 +995,10 @@ def render_dashboard(history, endpoints, now=None,
         headers_text = endpoint_headers_text(ep)
         http_status = endpoint_http_status_text(ep, cur)
         # SLA breach this month: the shortfall, and when the breach
-        # alert fired — the same numbers as the SLA report, so the
-        # dashboard and the report can never disagree.
-        sla_row = report.get(name, {})
-        if sla_row.get("met") is False:
-            sla_text = (f"BREACH -{sla_row['shortfall_pct']:.1f}pp")
-            alert = (sla_alerts or {}).get(name) or {}
-            if alert.get("month") == (f"{current.tm_year:04d}-"
-                                      f"{current.tm_mon:02d}"):
-                alerted = alert.get("alerted_at")
-                if alerted is not None:
-                    sla_text += (" alerted " + time.strftime(
-                        "%H:%M", time.localtime(alerted)))
-        else:
-            sla_text = "-"
+        # alert fired — from the same helper the static status page
+        # reads, so the dashboard and the page can never disagree.
+        sla_text = endpoint_sla_breach_text(
+            history, endpoints, name, now=now, sla_alerts=sla_alerts)
         # How long the current outage has lasted: the first failed
         # check in the current run (unconfirmed failures included,
         # so the clock starts when it first failed, not when the

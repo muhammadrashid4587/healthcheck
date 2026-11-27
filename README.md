@@ -118,7 +118,8 @@ endpoint, and serves a small status dashboard over `http.server`.
   columns after Latency, and the Alert at / Cooldown
   columns next to the Fail streak, plus the Method, Headers, HTTP
   status, and Cert expires columns after the Cooldown column, and
-  a Last error column after the latency sparkline — plus
+  a Last error column after the latency sparkline, and an SLA breach
+  column after Last error — plus
   a recent-incidents list per
   endpoint, as one self-contained HTML file with no external
   references, so it can be hosted anywhere with no server. It is a
@@ -162,6 +163,15 @@ endpoint, and serves a small status dashboard over `http.server`.
   recovered endpoint still shows why it last failed, and a remote
   source shows `-`, since its snapshot carries no per-check
   records.
+  The SLA breach column is the same `BREACH -X.Xpp` figure the
+  dashboard shows, right after Last error — from the same helper
+  the dashboard reads, so the two pages can never disagree.
+  `BREACH -X.Xpp` when the endpoint is below its `sla_target` in
+  the page's calendar month, `-` when it has no target, no data
+  in the month, or meets the target. A snapshot carries no alert
+  records, so unlike the live dashboard it does not append the
+  time the breach alert fired; an extra source's endpoints carry
+  no config, so they have no target and always show `-`.
   Combine with `--once` to check first, then render.
   `--status-page-source LABEL=PATH` (repeatable) merges another
   healthcheck instance's persisted history into the same page under
@@ -1510,8 +1520,31 @@ make test   # python3 -m unittest discover -s tests -v
   later success, so a recovered endpoint still shows why it last
   failed; a remote source shows `-`, since its snapshot carries
   no per-check records — done in 0.61.0.
+- [x] SLA breach column on the static status page: the
+  `--status-page` output gains the same column the dashboard
+  shows, right after Last error and before Last check —
+  `BREACH -X.Xpp` when the endpoint is below its `sla_target`
+  in the page's calendar month (`-` when it has no target, no
+  data in the month, or meets the target), from a shared
+  `endpoint_sla_breach_text` helper the dashboard reads too, so
+  the two pages can never disagree. A snapshot carries no alert
+  records, so no "alerted" time is appended, unlike the live
+  dashboard; an extra source's endpoints carry no config, so they
+  have no target and always show `-` — done in 0.62.0.
 
 ## Changelog
+
+- **0.62.0** — SLA breach column on the static status page: the
+  `--status-page` output gains the same column the dashboard has,
+  right after Last error and before Last check — `BREACH -X.Xpp`
+  when the endpoint is below its `sla_target` in the page's
+  calendar month (`-` when it has no target, no data in the month,
+  or meets the target), from a shared
+  `endpoint_sla_breach_text` helper the dashboard reads too, so
+  the two pages can never disagree. A snapshot carries no alert
+  records, so no "alerted" time is appended, unlike the live
+  dashboard; an extra source's endpoints carry no config, so they
+  have no target and always show `-`.
 
 - **0.61.0** — Last error column on the static status page: the
   `--status-page` output gains the same column the dashboard has,
