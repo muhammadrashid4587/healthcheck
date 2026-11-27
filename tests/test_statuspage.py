@@ -331,6 +331,71 @@ class RenderTests(unittest.TestCase):
         self.assertIn("<td>-</td><td>-</td><td>-</td><td>-</td>",
                       page)
 
+    def test_depends_on_and_maintenance_columns(self):
+        # The static page carries the same Depends on / Maintenance
+        # columns as the dashboard, right after Cert expires and
+        # before Uptime — from the same shared helpers the
+        # dashboard reads, so the two pages can never disagree.
+        # Depends on is the name from `depends_on` ("-" when the
+        # endpoint has no dependency); Maintenance is the
+        # endpoint's declared windows ("-" when it declares
+        # none). The dependency name is HTML-escaped, like the
+        # endpoint name.
+        hist = History()
+        hist.record(_result("web", True, at=BASE))
+        hist.record(_result("plain", True, at=BASE))
+        hist.record(_result("evil", True, at=BASE))
+        page = render_status_page(
+            hist,
+            [{"name": "web", "type": "http",
+              "url": "http://example.com", "depends_on": "db",
+              "maintenance_windows": [
+                  {"days": "sat", "start": "02:00", "end": "04:00"},
+                  {"days": "sun", "start": "03:00", "end": "05:00"}]},
+             {"name": "plain", "type": "http",
+              "url": "http://plain.example.com"},
+             {"name": "evil", "type": "http",
+              "url": "http://evil.example.com",
+              "depends_on": "<b>db</b>"}],
+            now=BASE + 200)
+        self.assertIn(
+            "<th>Cert expires</th><th>Depends on</th>"
+            "<th>Maintenance</th><th>Uptime</th>",
+            page)
+        # web depends on db and has two windows, joined with "; ".
+        self.assertIn(
+            "<td>db</td><td>Sat 02:00–04:00; Sun 03:00–05:00</td>",
+            page)
+        # plain has no dependency and no windows: "-" for both,
+        # right after its Cert expires "-" and before its 100%
+        # uptime.
+        self.assertIn(
+            "<td>-</td><td>-</td><td>-</td><td>100.0%</td>", page)
+        # The dependency name is escaped, never raw HTML.
+        self.assertIn("<td>&lt;b&gt;db&lt;/b&gt;</td>", page)
+        self.assertNotIn("<td><b>db</b></td>", page)
+
+    def test_remote_source_depends_on_and_maintenance_columns_are_dash(self):
+        # An extra source's endpoints carry no config, so they show
+        # "-" for both columns — a file source's recorded checks
+        # cannot supply them, and a remote source shows "-" for
+        # them too, like the other config columns.
+        page = render_status_page(
+            History(), [], now=BASE + 200,
+            extra_sources=[("remote", History(),
+                            [{"name": "web"}])])
+        self.assertIn("<h2>remote</h2>", page)
+        self.assertIn(
+            "<th>Cert expires</th><th>Depends on</th>"
+            "<th>Maintenance</th><th>Uptime</th>",
+            page)
+        # The remote row's Method / Headers / HTTP status / Cert
+        # expires / Depends on / Maintenance are all "-".
+        self.assertIn(
+            "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>"
+            "<td>-</td>",
+            page)
+
     def test_cert_expires_soon_and_expired(self):
         # Inside the endpoint's warning window the page shows
         # "(soon)"; once the certificate has lapsed it shows

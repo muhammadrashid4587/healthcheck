@@ -281,6 +281,26 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("100.0%", page)  # web: 1/1 up
         self.assertIn("0.0%", page)    # db: 0/1 up
 
+    def test_dashboard_depends_on_and_maintenance_columns(self):
+        # The dashboard's Depends on / Maintenance columns, right
+        # after Cert expires and before Uptime, come from the same
+        # shared helpers the static status page reads, so the two
+        # pages can never disagree: web depends on db and declares
+        # a Saturday window; db has neither, so both are "-".
+        page = render_dashboard(self.history, [
+            {"name": "web", "type": "http",
+             "url": "http://example.com", "depends_on": "db",
+             "maintenance_windows": [
+                 {"days": "sat", "start": "02:00", "end": "04:00"}]},
+            {"name": "db", "type": "tcp", "host": "127.0.0.1",
+             "port": 5432},
+        ])
+        self.assertIn(
+            "<th>Cert expires</th><th>Depends on</th>"
+            "<th>Maintenance</th><th>Uptime</th>",
+            page)
+        self.assertIn("<td>db</td><td>Sat 02:00–04:00</td>", page)
+
     def test_dashboard_shows_windowed_uptime_columns(self):
         # Checks recorded just now: both in the 24h and 7d windows.
         import time

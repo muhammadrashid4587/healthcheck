@@ -276,6 +276,28 @@ def endpoint_sla_breach_text(history, endpoints, name, now=None,
     return text
 
 
+def endpoint_depends_on_text(ep):
+    """The endpoint this one depends on, or "-".
+
+    The name from `depends_on` — the endpoint that must be UP for
+    this one to be checked at all — "-" when it has no dependency.
+    Shared by the dashboard and the static status page, so the two
+    can never disagree.
+    """
+    return ep.get("depends_on") or "-"
+
+
+def endpoint_maintenance_text(ep):
+    """The endpoint's maintenance windows, or "-".
+
+    The same `summarize_windows` the dashboard reads — "Sat
+    02:00–04:00", several windows joined with "; " — "-" when the
+    endpoint declares none. Shared by the dashboard and the static
+    status page, so the two can never disagree.
+    """
+    return summarize_windows(ep.get("maintenance_windows"))
+
+
 def status_snapshot(history, endpoints, now=None,
                     status_page_sources=None, sla_alerts=None,
                     cert_alerts=None, alert_records=None):
@@ -959,8 +981,14 @@ def render_dashboard(history, endpoints, now=None,
         up_24h = history.uptime_pct_window(name, 24 * 3600, now=now)
         up_7d = history.uptime_pct_window(name, 7 * 24 * 3600, now=now)
         up_30d = uptime_snap[name]["windows"]["30d"]["uptime_pct"]
-        depends_on = ep.get("depends_on") or "-"
-        windows = summarize_windows(ep.get("maintenance_windows"))
+        # Depends on / Maintenance, right after Cert expires, from
+        # the same shared helpers the static status page reads, so
+        # the two pages can never disagree. A dependency is the
+        # name from `depends_on` ("-" when it has none); the
+        # windows are the endpoint's declared maintenance windows
+        # ("-" when it declares none).
+        depends_on = endpoint_depends_on_text(ep)
+        windows = endpoint_maintenance_text(ep)
         if cur is None:
             status, latency, last = "UNKNOWN", "-", "-"
         elif cur.get("maintenance", False):

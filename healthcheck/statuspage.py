@@ -34,7 +34,15 @@ window, "expired" once it has lapsed, "-" when no certificate was
 ever seen). All four come from the same helpers the dashboard
 reads — `endpoint_method_text`, `endpoint_headers_text`,
 `endpoint_http_status_text`, `endpoint_cert_expiry_text` — so the
-two pages can never disagree. A static snapshot carries no alert
+two pages can never disagree. Right after Cert expires, before
+Uptime, the Depends on and Maintenance columns: Depends on is the
+name from `depends_on` ("-" when the endpoint has no dependency)
+and Maintenance is the endpoint's declared windows ("Sat
+02:00–04:00", several joined with "; ", "-" when it declares none),
+from the same `endpoint_depends_on_text` and
+`endpoint_maintenance_text` the dashboard reads, so the two pages
+can never disagree; an extra source's endpoints carry no config, so
+they show "-" for both. A static snapshot carries no alert
 records, so unlike the live dashboard the page does not append
 the time a cert-expiry alert fired. An extra source's endpoints
 carry no config, so they show "-" for Method and Headers; a file
@@ -73,9 +81,10 @@ import time
 
 from .flap import DEFAULT_THRESHOLD
 from .server import (endpoint_cert_expiry_text, endpoint_check_interval_text,
-                     endpoint_headers_text, endpoint_http_status_text,
-                     endpoint_last_error_text,
-                     endpoint_latency_budget_text, endpoint_method_text,
+                     endpoint_depends_on_text, endpoint_headers_text,
+                     endpoint_http_status_text, endpoint_last_error_text,
+                     endpoint_latency_budget_text,
+                     endpoint_maintenance_text, endpoint_method_text,
                      endpoint_retries_text, endpoint_sla_breach_text,
                      format_duration, latency_percentiles_text,
                      latency_sparkline)
@@ -268,6 +277,19 @@ def _render_source(history, endpoints, generated, label=None):
         # per-check records — and a file source shows its recorded
         # failure, like a local one.
         last_error_text = endpoint_last_error_text(history, name)
+        # Depends on / Maintenance, right after Cert expires and
+        # before Uptime, exactly as the dashboard shows them — from
+        # the same helpers the dashboard reads, so the two pages
+        # can never disagree. Depends on is the name from
+        # `depends_on` ("-" when the endpoint has no dependency);
+        # Maintenance is the endpoint's declared windows ("Sat
+        # 02:00–04:00", several joined with "; ", "-" when it
+        # declares none). An extra source's endpoints carry no
+        # config, so they show "-" for both — a file source's
+        # recorded checks cannot supply them, and a remote source
+        # shows "-" for them too, like the other config columns.
+        depends_text = endpoint_depends_on_text(ep)
+        maintenance_text = endpoint_maintenance_text(ep)
         # SLA breach, right after Last error and before Last
         # check, exactly as the dashboard shows it — from the
         # same helper the dashboard reads, so the two pages can
@@ -291,6 +313,8 @@ def _render_source(history, endpoints, generated, label=None):
             f"<td>{html.escape(headers_text)}</td>"
             f"<td>{html.escape(http_status)}</td>"
             f"<td>{html.escape(cert_text)}</td>"
+            f"<td>{html.escape(depends_text)}</td>"
+            f"<td>{html.escape(maintenance_text)}</td>"
             f"<td>{up}</td><td>{day}</td><td>{week}</td><td>{month}</td><td>{latency}</td>"
             f"<td>{html.escape(budget_text)}</td>"
             f"<td>{html.escape(interval_text)}</td>"
@@ -329,7 +353,7 @@ def _render_source(history, endpoints, generated, label=None):
                 f"<h3>{html.escape(name)}</h3><ul>{''.join(items)}</ul>"
                 f"<p>Duration histogram: {buckets}</p>")
     body = "\n".join(rows) or \
-        "<tr><td colspan=\"23\">No endpoints configured.</td></tr>"
+        "<tr><td colspan=\"25\">No endpoints configured.</td></tr>"
     if down_count:
         banner = (f"<p class=\"banner down\">{down_count} endpoint"
                   f"{'s' if down_count != 1 else ''} down</p>")
@@ -343,7 +367,7 @@ def _render_source(history, endpoints, generated, label=None):
         "<th>Fail streak</th>"
         "<th>Alert at</th><th>Cooldown</th>"
         "<th>Method</th><th>Headers</th><th>HTTP status</th>"
-        "<th>Cert expires</th><th>Uptime</th>"
+        "<th>Cert expires</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th>"
         "<th>Uptime 24h</th><th>Uptime 7d</th><th>Uptime 30d</th><th>Latency</th>"
         "<th>Latency budget</th><th>Check every</th><th>Retries</th>"
         "<th>Latency p50 / p95 / p99</th>"

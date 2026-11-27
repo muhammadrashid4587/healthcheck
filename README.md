@@ -118,6 +118,7 @@ endpoint, and serves a small status dashboard over `http.server`.
   columns after Latency, and the Alert at / Cooldown
   columns next to the Fail streak, plus the Method, Headers, HTTP
   status, and Cert expires columns after the Cooldown column, and
+  Depends on / Maintenance columns after Cert expires, and
   a Last error column after the latency sparkline, and an SLA breach
   column after Last error — plus
   a recent-incidents list per
@@ -172,6 +173,12 @@ endpoint, and serves a small status dashboard over `http.server`.
   records, so unlike the live dashboard it does not append the
   time the breach alert fired; an extra source's endpoints carry
   no config, so they have no target and always show `-`.
+  The Depends on column is the name from `depends_on` (`-` when
+  the endpoint has no dependency) and Maintenance is the
+  endpoint's declared windows (`Sat 02:00–04:00`, several joined
+  with `; `, `-` when it declares none), from the same helpers the
+  dashboard reads, so the two pages can never disagree; an extra
+  source's endpoints carry no config, so they show `-` for both.
   Combine with `--once` to check first, then render.
   `--status-page-source LABEL=PATH` (repeatable) merges another
   healthcheck instance's persisted history into the same page under
@@ -188,10 +195,11 @@ endpoint, and serves a small status dashboard over `http.server`.
   status and uptime figures (all-time, 24h, 7d) as reported; a
   snapshot carries no per-check records, so there is no latency
   sparkline and no incident list for a remote source, and the
-  Method, Headers, HTTP status, and Cert expires columns all show
+  Method, Headers, HTTP status, Cert expires, Depends on, and
+  Maintenance columns all show
   `-` there (a file source still shows its recorded HTTP status
-  and cert expiry, but `-` for Method and Headers, since a history
-  file carries no endpoint config), and an
+  and cert expiry, but `-` for Method, Headers, Depends on, and
+  Maintenance, since a history file carries no endpoint config), and an
   unreachable instance (or bad JSON) logs a warning and renders
   empty rather than failing the page.
   An endpoint whose dependency is not up shows SKIPPED, with the
@@ -1531,8 +1539,29 @@ make test   # python3 -m unittest discover -s tests -v
   records, so no "alerted" time is appended, unlike the live
   dashboard; an extra source's endpoints carry no config, so they
   have no target and always show `-` — done in 0.62.0.
+- [x] Depends on / Maintenance columns on the static status page:
+  the `--status-page` output gains the same two columns the
+  dashboard shows, right after Cert expires and before Uptime —
+  the name from `depends_on` (`-` when the endpoint has no
+  dependency) and the endpoint's declared maintenance windows
+  (`Sat 02:00–04:00`, several joined with `; `, `-` when it
+  declares none), from shared `endpoint_depends_on_text` and
+  `endpoint_maintenance_text` helpers the dashboard reads too, so
+  the two pages can never disagree; an extra source's endpoints
+  carry no config, so they show `-` for both — done in 0.63.0.
 
 ## Changelog
+
+- **0.63.0** — Depends on / Maintenance columns on the static
+  status page: the `--status-page` output gains the same two
+  columns the dashboard has, right after Cert expires and before
+  Uptime — the name from `depends_on` (`-` when the endpoint has
+  no dependency) and the endpoint's declared maintenance windows
+  (`Sat 02:00–04:00`, several joined with `; `, `-` when it
+  declares none), from shared `endpoint_depends_on_text` and
+  `endpoint_maintenance_text` helpers the dashboard reads too, so
+  the two pages can never disagree; an extra source's endpoints
+  carry no config, so they show `-` for both.
 
 - **0.62.0** — SLA breach column on the static status page: the
   `--status-page` output gains the same column the dashboard has,
