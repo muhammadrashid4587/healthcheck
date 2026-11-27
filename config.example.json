@@ -3,6 +3,7 @@
     {
       "expect_status": 200,
       "alert_threshold": 5,
+      "alert_cooldown_s": 3600,
       "headers": {
         "X-Api-Key": "example-key"
       },

@@ -78,7 +78,10 @@ endpoint, and serves a small status dashboard over `http.server`.
   each endpoint can set its own `alert_threshold` to page later
   than it flips (a noisy endpoint that flips DOWN at 3 failures
   can wait until 5 before it pages; one that recovers before its
-  threshold never pages at all).
+  threshold never pages at all). An endpoint that stays down can
+  page again every `alert_cooldown_s` seconds (off by default), so
+  a long outage re-pages instead of going quiet; a recovery clears
+  the cooldown, so the next outage pages immediately.
 - Retry once before a failure counts: when a check fails it is
   immediately retried once, and only a second consecutive failure
   counts as DOWN for flap, alert, and uptime purposes — a blip
@@ -347,6 +350,35 @@ normally without it.
   column and `GET /api/status` gains `alert_threshold` per
   endpoint, next to the Fail streak / `consecutive_failures` they
   are read against.
+- `alert_cooldown_s` — seconds between pages for an endpoint's
+  ongoing outage (optional, either type, e.g. `300`): an endpoint
+  that stays down pages again once that many seconds have passed
+  since its last down alert, so a long outage re-pages instead of
+  going quiet after the first page — the repeat page carries
+  `"repeat": true` in its webhook payload, so the receiver can
+  tell it from the first page of the outage. The first page of an
+  outage is immediate (the cooldown only spaces repeats of the
+  same outage, never a new outage's first page), and a recovery
+  clears the cooldown state, so the next outage pages immediately
+  and the recovery alert itself is never delayed. An endpoint
+  without one never re-pages — it alerts exactly once per outage,
+  like before. It can also be set globally in the config
+  (`alert_cooldown_s` at the top level) as the default for
+  endpoints without their own; a per-endpoint value wins over the
+  global. Must be a positive number of seconds; a bad value is
+  rejected at config load. The `--alert-cooldown NAME=SECONDS`
+  flag (repeatable) sets or replaces it for one endpoint, and the
+  flag wins over the config file; a flag naming an endpoint that
+  is not in the config is rejected. A SIGHUP reload picks up
+  `alert_cooldown_s` changes from the edited file (a bad value
+  keeps the running config), and re-applies the flags — the reload
+  does reset flap state, so a mid-outage endpoint re-pages once
+  it re-confirms, even inside the cooldown, and the cooldown then
+  governs repeats after that page. The dashboard gains a Cooldown
+  column and `GET /api/status` gains `alert_cooldown_s`,
+  `last_alerted_at`, and `alert_cooldown_remaining_s` per
+  endpoint, so an operator can see the next page coming without
+  waiting for it.
 - `retry_on_failure` — retry a failed check once before it counts
   (default true, either type, or globally in the config). When a
   check fails it is immediately retried once, on the same endpoint
@@ -601,7 +633,14 @@ endpoint pages (the Alert at column — the endpoint's own
 `alert_threshold`, or the flap threshold, 3 by default, when it
 sets none — so the streak next to it says how close the endpoint is
 to paging: the endpoint flips DOWN at the flap threshold, but the
-alert only fires once the streak reaches Alert at), the HTTP method
+alert only fires once the streak reaches Alert at), the seconds
+between pages while the endpoint's outage continues (the Cooldown
+column — the endpoint's `alert_cooldown_s`, `-` when it never
+re-pages and alerts exactly once per outage — with the time until
+the next page appended while it is DOWN and a re-page is pending,
+e.g. "300 s (re-alert in 4m 12s)", or "300 s (re-alert due)" once
+the cooldown has elapsed; a recovery clears the record, so a
+recovered endpoint shows just the configured cooldown), the HTTP method
 the endpoint is checked with (`HEAD`, `POST`, `-` when it uses the
 default GET — TCP endpoints show `-` too), the names of the extra
 request headers the check sends (`Authorization`, `X-Api-Key`, `-`
@@ -718,6 +757,14 @@ streak reaches `alert_threshold`, which is the endpoint's own
 value when set and the flap threshold otherwise), `alert_threshold`
 (the consecutive failures before the endpoint's outage pages — its
 own `alert_threshold` when set, else the flap threshold in effect),
+`alert_cooldown_s` (the seconds between pages for the endpoint's
+ongoing outage — its own `alert_cooldown_s`, the config's global
+one, or `null` when it never re-pages), `last_alerted_at` (the
+epoch second the endpoint's current outage last paged, or `null`
+when it never paged or has recovered since), `alert_cooldown_remaining_s`
+(how many seconds until it pages again while it stays DOWN — `0`
+when the cooldown has already elapsed, `null` when it is not down,
+has no cooldown, or never paged),
 `recent_incidents`
 (the endpoint's recent outages, newest first, at most 5 — each
 `{"start", "end", "checks", "ongoing", "duration_s"}`, grouped the
@@ -1327,9 +1374,44 @@ make test   # python3 -m unittest discover -s tests -v
   /api/status` gains `alert_threshold` per endpoint, next to the
   Fail streak / `consecutive_failures` they are read against —
   done in 0.54.0.
+- [x] Per-endpoint alert cooldown / re-alert interval
+  (`alert_cooldown_s`): an endpoint that stays down pages again
+  once that many seconds have passed since its last down alert —
+  a long outage re-pages instead of going quiet after the first
+  page, and the repeat page carries `"repeat": true` in its
+  webhook payload. The first page of an outage is immediate, a
+  recovery clears the cooldown state (so the next outage pages
+  immediately and the recovery alert is never delayed), and an
+  endpoint without one alerts exactly once per outage, like
+  before. It can also be set globally in the config as the
+  default for endpoints without their own. Must be a positive
+  number of seconds, validated at load and on SIGHUP reload;
+  `--alert-cooldown NAME=SECONDS` (repeatable, flag wins) sets
+  it per endpoint. The dashboard gains a Cooldown column (with
+  the time until the next page while the endpoint is DOWN) and
+  `GET /api/status` gains `alert_cooldown_s`,
+  `last_alerted_at`, and `alert_cooldown_remaining_s` per
+  endpoint — done in 0.55.0.
 
 ## Changelog
 
+- **0.55.0** — Per-endpoint alert cooldown / re-alert interval: an
+  endpoint that stays down pages again once `alert_cooldown_s`
+  seconds have passed since its last down alert — a long outage
+  re-pages instead of going quiet after the first page, and the
+  repeat page carries `"repeat": true` in its webhook payload.
+  The first page of an outage is immediate, a recovery clears the
+  cooldown state (so the next outage pages immediately and the
+  recovery alert is never delayed), and an endpoint without one
+  alerts exactly once per outage, like before. The cooldown can
+  also be set globally in the config as the default for endpoints
+  without their own; it must be a positive number of seconds,
+  validated at config load and on SIGHUP reload, and
+  `--alert-cooldown NAME=SECONDS` (repeatable, flag wins) sets or
+  replaces it per endpoint. The dashboard gains a Cooldown column
+  (with the time until the next page while the endpoint is DOWN)
+  and `GET /api/status` gains `alert_cooldown_s`,
+  `last_alerted_at`, and `alert_cooldown_remaining_s` per endpoint.
 - **0.54.0** — Per-endpoint alert threshold: an endpoint can set
   `alert_threshold` (e.g. 5) in the config, and its outage only
   pages once that many consecutive failures have piled up — the
@@ -1345,7 +1427,8 @@ make test   # python3 -m unittest discover -s tests -v
   NAME=N` (repeatable, flag wins) sets or replaces it per
   endpoint. The dashboard gains an Alert at column and `GET
   /api/status` gains `alert_threshold` per endpoint, next to the
-  Fail streak / `consecutive_failures` they are read against.
+  Fail streak / `consecutive_failures` they are read against —
+  done in 0.54.0.
 - **0.53.0** — Consecutive-failures gauge in `GET /metrics`:
   `healthcheck_consecutive_failures` exposes the current run of
   failed checks per endpoint, from the same

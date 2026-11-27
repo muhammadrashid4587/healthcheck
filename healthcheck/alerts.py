@@ -66,36 +66,137 @@ class WebhookAlerter:
     channel, and falls back to `url` when it has none. Either or
     both may be absent — an endpoint with no URL anywhere sends
     nothing, but its state is still tracked.
+
+    An endpoint that stays down can page again: when `notify` is
+    called with a `cooldown_s` for an endpoint that is still down
+    and that many seconds have passed since its last down alert,
+    the down alert fires again, marked `"repeat": True` in the
+    payload, so a long outage re-pages instead of going quiet
+    after the first page. With no cooldown the endpoint pages
+    exactly once per outage, like before. A recovery always pages
+    (when the outage paged) and clears the cooldown state, so the
+    next outage pages immediately, whatever the cooldown was.
+
+    `records`, when given, is a dict the alerter writes into:
+    `records[name] = {"alerted_at": <epoch seconds>}` for the last
+    down alert fired for the endpoint's current outage. The
+    dashboard server reads the same dict (passed through
+    `run_forever`) to show when each endpoint last paged; a
+    recovery deletes the record, so the slate is clean for the
+    next outage. The records also seed the cooldown clock, so a
+    SIGHUP reload (which recreates this alerter) does not reset
+    the time since the last page — though a reload does reset flap
+    state, so a mid-outage endpoint re-pages once it re-confirms,
+    even inside the cooldown, and the cooldown then governs
+    repeats after that page.
     """
 
-    def __init__(self, url, timeout=5.0, routes=None):
+    def __init__(self, url, timeout=5.0, routes=None, records=None):
         self.url = url
         self.timeout = timeout
         self.routes = dict(routes) if routes else {}
         self._last_ok = {}
+        self.records = records if records is not None else {}
+        # Epoch seconds of the last down alert per endpoint, seeded
+        # from the shared records so a reload does not reset the
+        # time since the last page (see the class docs).
+        self._last_alert_at = {
+            name: rec["alerted_at"]
+            for name, rec in self.records.items()
+            if isinstance(rec, dict) and "alerted_at" in rec
+        }
 
     def url_for(self, name):
         """The webhook URL an alert for `name` goes to, or None."""
         return self.routes.get(name) or self.url
 
-    def notify(self, result):
+    def last_alerted_at(self, name):
+        """Epoch seconds `name`'s current outage last paged, or
+        None when it never paged (or has recovered since)."""
+        return self._last_alert_at.get(name)
+
+    def notify(self, result, cooldown_s=None):
         """Send an alert if result.ok differs from the last known state.
 
         Returns the payload sent, or None when nothing was sent (first
-        check, no change, or no webhook URL for this endpoint).
-        Delivery failure does not change the return value: the
-        transition was real even if the webhook was unreachable.
+        check, no change, no webhook URL for this endpoint, or a
+        still-down endpoint inside its cooldown). Delivery failure
+        does not change the return value: the transition was real
+        even if the webhook was unreachable.
+
+        `cooldown_s` is the endpoint's alert cooldown in seconds
+        (see the class docs): while the endpoint stays down, a
+        repeat down alert fires once that many seconds have passed
+        since the last one, with `"repeat": True` in the payload —
+        and `previous_ok` False, since the endpoint was already
+        down. A repeat is still a page: it is recorded as the last
+        alert, so the next repeat waits a full cooldown from it.
+        An endpoint with no webhook URL anywhere records nothing,
+        like the SLA and cert-expiry alerters — no page went out,
+        so there is no last alert to count from.
         """
         previous = self._last_ok.get(result.name)
         self._last_ok[result.name] = result.ok
-        if previous is None or previous == result.ok:
+        if previous is None:
             return None
-        payload = alert_payload(result, previous)
+        if previous == result.ok:
+            if not result.ok:
+                # Still down: a repeat page, but only once the
+                # cooldown has elapsed since the last down alert.
+                # No cooldown configured, or never paged (a fresh
+                # alerter whose first check already saw it down):
+                # nothing to repeat.
+                last = self._last_alert_at.get(result.name)
+                if (cooldown_s is None or last is None
+                        or result.checked_at - last < cooldown_s):
+                    return None
+                return self._send_down(result, previous)
+            return None
+        if result.ok:
+            # Recovery: the outage paged, so the recovery pages
+            # too — and the cooldown state is cleared, so the
+            # next outage pages immediately. The outage is over
+            # whether or not the recovery page had anywhere to
+            # go, so the state is cleared either way.
+            payload = self._send(result, previous)
+            self._last_alert_at.pop(result.name, None)
+            self.records.pop(result.name, None)
+            return payload
+        # A fresh outage pages at once: the cooldown only spaces
+        # repeats of the same outage, never the first page of a
+        # new one.
+        payload = self._send(result, previous)
+        if payload is not None:
+            self._last_alert_at[result.name] = result.checked_at
+            self.records[result.name] = {
+                "alerted_at": result.checked_at}
+        return payload
+
+    def _send(self, result, previous_ok, repeat=False):
+        """POST the state-change payload for `result`, or None when
+        there is no webhook URL for the endpoint. A repeat down
+        alert carries `"repeat": True` so the receiver can tell it
+        from the first page of the outage."""
+        payload = alert_payload(result, previous_ok)
+        if repeat:
+            payload["repeat"] = True
         url = self.url_for(result.name)
         if url is None:
             return None
         if post_alert(url, payload, timeout=self.timeout):
             log.info("alert sent for %s: %s", result.name, payload["event"])
+        return payload
+
+    def _send_down(self, result, previous_ok):
+        """Fire (and record) a down alert for an endpoint that is
+        still down: the repeat page. Returns the payload, or None
+        when there is no webhook URL for the endpoint — nothing
+        went out, so the cooldown clock does not advance."""
+        payload = self._send(result, previous_ok, repeat=True)
+        if payload is not None:
+            self._last_alert_at[result.name] = result.checked_at
+            self.records[result.name] = {
+                "alerted_at": result.checked_at}
         return payload
 
 

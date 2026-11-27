@@ -93,7 +93,7 @@ def format_duration(seconds):
 
 def status_snapshot(history, endpoints, now=None,
                     status_page_sources=None, sla_alerts=None,
-                    cert_alerts=None):
+                    cert_alerts=None, alert_records=None):
     """Machine-readable status for every endpoint: the same data the
     dashboard renders, as plain JSON-friendly values.
 
@@ -159,6 +159,18 @@ def status_snapshot(history, endpoints, now=None,
     it to see how close a still-UP endpoint is to paging: the
     endpoint flips DOWN at the flap threshold, but the alert only
     fires once the run reaches its alert_threshold.
+    "alert_cooldown_s" is the seconds between pages for the
+    endpoint's ongoing outage (its own `alert_cooldown_s`, the
+    config's global one, or None — no re-paging, one alert per
+    outage). When `alert_records` is given (the shared down-alert
+    records from the checker loop), "last_alerted_at" is the epoch
+    second the endpoint's current outage last paged, or None when
+    it never paged (or has recovered since), and
+    "alert_cooldown_remaining_s" is how many seconds until it
+    pages again while it stays DOWN — 0 when the cooldown has
+    already elapsed, None when it is not down, has no cooldown,
+    or never paged — so an operator can see the next page coming
+    without waiting for it.
     "recent_incidents" is the endpoint's recent outages, newest
     first (at most 5) — each {"start", "end", "checks", "ongoing",
     "duration_s"}, grouped the same way as the static status
@@ -239,6 +251,20 @@ def status_snapshot(history, endpoints, now=None,
             cert_alert.get("alerted_at")
             if cert_alert.get("cert_expires_at") == expires_at
             else None)
+        # The last down alert for the current outage, and how long
+        # until it pages again: only a DOWN endpoint with a
+        # cooldown and a page behind it has a countdown — a
+        # recovery clears the record, so a recovered endpoint
+        # shows no pending re-alert.
+        alert_record = (alert_records or {}).get(name) or {}
+        last_alerted_at = alert_record.get("alerted_at")
+        cooldown = ep.get("alert_cooldown_s")
+        if (status == "DOWN" and cooldown is not None
+                and last_alerted_at is not None):
+            cooldown_remaining = round(
+                max(0.0, cooldown - (ref - last_alerted_at)), 1)
+        else:
+            cooldown_remaining = None
         out.append({
             "name": name,
             "status": status,
@@ -289,6 +315,9 @@ def status_snapshot(history, endpoints, now=None,
                 ep.get("alert_threshold")
                 if ep.get("alert_threshold") is not None
                 else DEFAULT_THRESHOLD),
+            "alert_cooldown_s": cooldown,
+            "last_alerted_at": last_alerted_at,
+            "alert_cooldown_remaining_s": cooldown_remaining,
             "recent_incidents": history.recent_incidents(name, now=now),
             "duration_histogram": history.incident_duration_histogram(
                 name, limit=5, now=now),
@@ -687,7 +716,7 @@ def render_recent_incidents(history, endpoints, now=None):
 
 def render_dashboard(history, endpoints, now=None,
                      status_page_sources=None, sla_alerts=None,
-                     cert_alerts=None):
+                     cert_alerts=None, alert_records=None):
     """Render the dashboard HTML.
 
     When `status_page_sources` is given and non-empty, a "Status
@@ -706,8 +735,16 @@ def render_dashboard(history, endpoints, now=None,
     the endpoint's `alert_threshold` — its own value when set,
     else the flap threshold (3 by default): the streak has to
     reach that number before the outage pages, so the two columns
-    together say how close the endpoint is to paging. When
-    `cert_alerts` carries a record for the
+    together say how close the endpoint is to paging. The Cooldown
+    column next to it is the endpoint's `alert_cooldown_s` — the
+    seconds between pages while its outage continues ("300 s", "-"
+    when it never re-pages and alerts exactly once per outage).
+    While the endpoint is DOWN and a re-page is pending, the time
+    until it pages again is appended ("300 s (re-alert in 4m
+    12s)", "300 s (re-alert due)" once the cooldown has elapsed
+    and the next check will page); a recovery clears the record,
+    so a recovered endpoint shows just the configured cooldown.
+    When `cert_alerts` carries a record for the
     endpoint's current certificate, the time its expiry alert
     fired is appended ("5d (soon) alerted 06:12"). The SLA breach column
     shows "BREACH -X.Xpp" for an endpoint below its `sla_target`
@@ -836,6 +873,29 @@ def render_dashboard(history, endpoints, now=None,
         if alert_at is None:
             alert_at = DEFAULT_THRESHOLD
         alert_text = str(alert_at)
+        # How long between pages while the outage continues: the
+        # endpoint's own `alert_cooldown_s` ("300 s"), "-" when it
+        # never re-pages. While DOWN with a page behind it, the
+        # time until the next page is appended, so the operator
+        # sees the re-alert coming — and "re-alert due" once the
+        # cooldown has elapsed and the next check will page. A
+        # recovery clears the alert record, so a recovered
+        # endpoint shows just the configured cooldown.
+        cooldown = ep.get("alert_cooldown_s")
+        if cooldown is None:
+            cooldown_text = "-"
+        else:
+            cooldown_text = f"{cooldown:g} s"
+            alert_record = (alert_records or {}).get(name) or {}
+            last_alerted_at = alert_record.get("alerted_at")
+            if (status == "DOWN" and last_alerted_at is not None):
+                remaining = cooldown - (ref - last_alerted_at)
+                if remaining > 0:
+                    cooldown_text += (
+                        " (re-alert in "
+                        f"{format_duration(remaining)})")
+                else:
+                    cooldown_text += " (re-alert due)"
         # When the endpoint's TLS certificate expires: whole days
         # left, "expired" once it has lapsed, "(soon)" inside the
         # endpoint's warning window (30 days by default), "-" when
@@ -871,6 +931,7 @@ def render_dashboard(history, endpoints, now=None,
             f"<td>{html.escape(down_text)}</td>"
             f"<td>{html.escape(streak_text)}</td>"
             f"<td>{html.escape(alert_text)}</td>"
+            f"<td>{html.escape(cooldown_text)}</td>"
             f"<td>{html.escape(ep.get('method') or '-')}</td>"
             f"<td>{html.escape(headers_text)}</td>"
             f"<td>{html.escape(http_status)}</td>"
@@ -887,7 +948,7 @@ def render_dashboard(history, endpoints, now=None,
             f"<td>{html.escape(sla_text)}</td>"
             f"<td>{last}</td></tr>"
         )
-    body = "\n".join(rows) or "<tr><td colspan=\"24\">No endpoints configured.</td></tr>"
+    body = "\n".join(rows) or "<tr><td colspan=\"25\">No endpoints configured.</td></tr>"
     if status_page_sources:
         items = "".join(
             f"<li>{html.escape(src['label'])} — "
@@ -901,13 +962,13 @@ def render_dashboard(history, endpoints, now=None,
 <html><head><meta charset="utf-8"><title>healthcheck</title>
 <style>body{{font-family:sans-serif;max-width:720px;margin:2em auto}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccc;padding:6px 10px;text-align:left}}.up{{color:green;font-weight:bold}}.down{{color:red;font-weight:bold}}.skipped{{color:#b8860b;font-weight:bold}}.maintenance{{color:#6a5acd;font-weight:bold}}</style>
 </head><body><h1>healthcheck</h1>
-<table><tr><th>Endpoint</th><th>Status</th><th>Down since</th><th>Fail streak</th><th>Alert at</th><th>Method</th><th>Headers</th><th>HTTP status</th><th>Cert expires</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Uptime 30d</th><th>Latency</th><th>Latency budget</th><th>Check every</th><th>Retries</th><th>Latency p50 / p95 / p99</th><th>Latency history</th><th>Last error</th><th>SLA breach</th><th>Last check</th></tr>
+<table><tr><th>Endpoint</th><th>Status</th><th>Down since</th><th>Fail streak</th><th>Alert at</th><th>Cooldown</th><th>Method</th><th>Headers</th><th>HTTP status</th><th>Cert expires</th><th>Depends on</th><th>Maintenance</th><th>Uptime</th><th>Uptime 24h</th><th>Uptime 7d</th><th>Uptime 30d</th><th>Latency</th><th>Latency budget</th><th>Check every</th><th>Retries</th><th>Latency p50 / p95 / p99</th><th>Latency history</th><th>Last error</th><th>SLA breach</th><th>Last check</th></tr>
 {body}</table>
 {incidents_html}{sources_html}<p>Rendered {time.strftime('%Y-%m-%d %H:%M:%S')} — reload to update.</p></body></html>"""
 
 
 def make_handler(history, endpoints, status_page_sources=None,
-                 sla_alerts=None, cert_alerts=None):
+                 sla_alerts=None, cert_alerts=None, alert_records=None):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path == "/api/status":
@@ -915,7 +976,8 @@ def make_handler(history, endpoints, status_page_sources=None,
                     status_snapshot(history, endpoints,
                                     status_page_sources=status_page_sources,
                                     sla_alerts=sla_alerts,
-                                    cert_alerts=cert_alerts)
+                                    cert_alerts=cert_alerts,
+                                    alert_records=alert_records)
                 ).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -1031,7 +1093,8 @@ def make_handler(history, endpoints, status_page_sources=None,
                 history, endpoints,
                 status_page_sources=status_page_sources,
                 sla_alerts=sla_alerts,
-                cert_alerts=cert_alerts).encode("utf-8")
+                cert_alerts=cert_alerts,
+                alert_records=alert_records).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(page)))
@@ -1045,7 +1108,8 @@ def make_handler(history, endpoints, status_page_sources=None,
 
 
 def serve(history, endpoints, host="127.0.0.1", port=8080,
-          status_page_sources=None, sla_alerts=None, cert_alerts=None):
+          status_page_sources=None, sla_alerts=None, cert_alerts=None,
+          alert_records=None):
     """Serve the dashboard forever (Ctrl-C to stop).
 
     `status_page_sources` is the merged list of status page sources
@@ -1056,12 +1120,16 @@ def serve(history, endpoints, host="127.0.0.1", port=8080,
     dashboard and GET /api/status show when each breach was alerted.
     `cert_alerts` is the shared dict of cert-expiry-alert records
     from the checker loop, so the dashboard and GET /api/status
-    show when each expiry alert fired.
+    show when each expiry alert fired. `alert_records` is the
+    shared dict of down-alert records from the checker loop, so
+    the dashboard and GET /api/status show when each endpoint
+    last paged and how long until it pages again.
     """
     server = ThreadingHTTPServer(
         (host, port),
         make_handler(history, endpoints,
                      status_page_sources=status_page_sources,
                      sla_alerts=sla_alerts,
-                     cert_alerts=cert_alerts))
+                     cert_alerts=cert_alerts,
+                     alert_records=alert_records))
     server.serve_forever()

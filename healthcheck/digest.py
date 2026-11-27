@@ -384,14 +384,24 @@ class DigestAlerter:
         webhook when one is configured, else the digest block's."""
         return self.routes.get(name) or self.config["webhook_url"]
 
-    def notify(self, result):
+    def notify(self, result, cooldown_s=None):
         """Record a confirmed state change; delegates to the inner
         alerter when one is set. Returns the payload, or None when
         nothing changed — the same contract as WebhookAlerter.notify.
+
+        `cooldown_s` is forwarded to the inner alerter, so a still-
+        down endpoint re-pages through it on the same schedule as
+        a bare webhook alerter. A repeat page is not a state
+        change, so it is returned but not recorded in the digest's
+        changes — recording it would count it as a fresh "went
+        DOWN" in the digest and inflate the flapping count, while
+        the endpoint already appears in the digest's currently-down
+        list. With no inner alerter there is no immediate page to
+        repeat, so only transitions are recorded.
         """
         if self.inner is not None:
-            payload = self.inner.notify(result)
-            if payload is not None:
+            payload = self.inner.notify(result, cooldown_s=cooldown_s)
+            if payload is not None and not payload.get("repeat"):
                 self._changes.append(payload)
             return payload
         previous = self._last_ok.get(result.name)

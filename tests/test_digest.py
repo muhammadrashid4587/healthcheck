@@ -306,7 +306,7 @@ class DigestAlerterTests(unittest.TestCase):
         sent = []
 
         class Inner:
-            def notify(self, result):
+            def notify(self, result, cooldown_s=None):
                 sent.append(result)
                 return {"endpoint": result.name, "ok": result.ok,
                         "checked_at": result.checked_at}

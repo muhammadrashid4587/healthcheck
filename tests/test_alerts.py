@@ -186,7 +186,7 @@ class CheckAllAlerterTests(unittest.TestCase):
         seen = []
 
         class Spy:
-            def notify(self, result):
+            def notify(self, result, cooldown_s=None):
                 seen.append(result)
                 return None
 

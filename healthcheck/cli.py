@@ -72,6 +72,7 @@ def load_config(path):
     validate_sla_targets(endpoints)
     validate_endpoint_webhooks(endpoints)
     validate_alert_thresholds(endpoints)
+    validate_alert_cooldowns(cfg)
     validate_status_page_sources(cfg)
     if "flap_threshold" in cfg:
         validate_threshold(cfg["flap_threshold"])
@@ -368,6 +369,123 @@ def resolve_alert_thresholds(cfg, args):
     for ep in cfg.get("endpoints", []):
         if ep.get("alert_threshold") is None:
             ep["alert_threshold"] = default
+
+
+def validate_alert_cooldowns(cfg):
+    """Reject bad `alert_cooldown_s` entries at config load.
+
+    An endpoint may declare how long must pass between pages for
+    the same outage (see `endpoint_alert_cooldown`): while it
+    stays down it pages again once that many seconds have passed
+    since its last down alert. The value may also be set globally
+    in the config (`alert_cooldown_s` at the top level) as the
+    default for endpoints without their own. Either value must be
+    a positive number of seconds (an integer or a float, not a
+    bool, not a string). An endpoint without one never re-pages —
+    it alerts exactly once per outage, like before. Raises
+    ValueError with a clear message; the monitor refuses to start
+    rather than run with a cooldown it can never wait out.
+    """
+    global_value = cfg.get("alert_cooldown_s")
+    if global_value is not None and (
+            isinstance(global_value, bool)
+            or not isinstance(global_value, (int, float))
+            or global_value <= 0):
+        raise ValueError(
+            f"alert_cooldown_s must be a positive number of "
+            f"seconds, not {global_value!r}")
+    for ep in cfg.get("endpoints", []):
+        value = ep.get("alert_cooldown_s")
+        if value is None:
+            continue
+        if (isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or value <= 0):
+            raise ValueError(
+                f"endpoint {ep['name']!r}: alert_cooldown_s must be "
+                f"a positive number of seconds, not {value!r}")
+
+
+def endpoint_alert_cooldown(cfg, ep):
+    """Seconds between pages for `ep`'s ongoing outage: its own
+    `alert_cooldown_s` when set, else the config file's global
+    `alert_cooldown_s`, else None — no re-paging, one alert per
+    outage, like before."""
+    value = ep.get("alert_cooldown_s")
+    if value is not None:
+        return value
+    return cfg.get("alert_cooldown_s")
+
+
+def parse_alert_cooldown(spec):
+    """Parse a --alert-cooldown NAME=SECONDS spec.
+
+    The name is an endpoint in the config; the cooldown is how
+    many seconds must pass between pages for that endpoint's
+    ongoing outage (see `endpoint_alert_cooldown`). A spec without
+    '=', an empty name, or a cooldown that is not a positive
+    number is rejected. Raises ValueError with a clear message.
+    """
+    if "=" not in spec:
+        raise ValueError(
+            f"--alert-cooldown needs NAME=SECONDS, got {spec!r}")
+    name, cooldown = spec.split("=", 1)
+    name = name.strip()
+    cooldown = cooldown.strip()
+    if not name or not cooldown:
+        raise ValueError(
+            f"--alert-cooldown needs a non-empty name and cooldown, "
+            f"got {spec!r}")
+    try:
+        value = float(cooldown)
+    except ValueError:
+        raise ValueError(
+            f"--alert-cooldown cooldown must be a number, got "
+            f"{cooldown!r}") from None
+    if value <= 0:
+        raise ValueError(
+            f"--alert-cooldown cooldown must be a positive number "
+            f"of seconds, got {cooldown!r}")
+    return name, value
+
+
+def apply_alert_cooldown_overrides(cfg, args):
+    """Apply --alert-cooldown flags to the config's endpoints.
+
+    Each flag sets (or replaces) the endpoint's `alert_cooldown_s`
+    — the flag wins over the config file, like --alert-threshold
+    does for its setting. A flag naming an endpoint that is not
+    in the config is rejected, so a typo does not silently do
+    nothing. `args` may be a namespace without the attribute
+    (tests build their own) — then there is nothing to apply.
+    Raises ValueError with a clear message.
+    """
+    specs = getattr(args, "alert_cooldown", None) or []
+    if not specs:
+        return
+    by_name = {ep["name"]: ep for ep in cfg.get("endpoints", [])}
+    for spec in specs:
+        name, value = parse_alert_cooldown(spec)
+        if name not in by_name:
+            raise ValueError(
+                f"--alert-cooldown names unknown endpoint {name!r}")
+        by_name[name]["alert_cooldown_s"] = value
+
+
+def resolve_alert_cooldowns(cfg, args):
+    """Fill in every endpoint's effective `alert_cooldown_s`.
+
+    An endpoint without one takes the config file's global
+    `alert_cooldown_s` when set, else None — no re-paging — so the
+    dashboard and GET /api/status can read the number straight
+    off the endpoint instead of re-deriving the default, and a
+    SIGHUP reload that changes the global re-resolves it the same
+    way. Runs after the --alert-cooldown flags are applied, so a
+    flag still wins over the global for its endpoint.
+    """
+    for ep in cfg.get("endpoints", []):
+        if ep.get("alert_cooldown_s") is None:
+            ep["alert_cooldown_s"] = cfg.get("alert_cooldown_s")
 
 
 def validate_check_intervals(endpoints):
@@ -919,7 +1037,7 @@ def endpoint_webhooks(cfg):
             if ep.get("webhook")}
 
 
-def make_alerter(cfg, args):
+def make_alerter(cfg, args, records=None):
     """A WebhookAlerter for the configured URL, or None if none is set.
 
     When `alert_digest` is configured, the alerter is wrapped in a
@@ -928,11 +1046,15 @@ def make_alerter(cfg, args):
     An endpoint's own `webhook` overrides the global URL for that
     endpoint, in both the per-change alerts and the digest — so an
     alerter exists whenever any endpoint has its own webhook, even
-    with no global URL set.
+    with no global URL set. `records`, when given, is the shared
+    dict the inner alerter writes its last-down-alert times into,
+    so the dashboard server can show when each endpoint last
+    paged.
     """
     url = webhook_url(cfg, args) if args is not None else cfg.get("webhook_url")
     routes = endpoint_webhooks(cfg)
-    inner = WebhookAlerter(url, routes=routes) if url or routes else None
+    inner = WebhookAlerter(url, routes=routes, records=records) \
+        if url or routes else None
     digest_cfg = cfg.get("alert_digest")
     if digest_cfg is not None:
         # Pass the raw block: DigestAlerter validates it itself. (Do
@@ -1150,7 +1272,15 @@ def check_all(endpoints, history, timeout=5.0, alerter=None,
                                        >= alert_at))
             effective = result if alertable \
                 else dataclasses.replace(result, ok=True)
-            alerter.notify(effective)
+            # The cooldown rides along: while the endpoint stays
+            # down it re-pages once `alert_cooldown_s` seconds have
+            # passed since its last down alert (None: exactly once
+            # per outage, like before). A recovery clears the
+            # cooldown state inside the alerter, so the next
+            # outage pages immediately.
+            alerter.notify(
+                effective,
+                cooldown_s=ep.get("alert_cooldown_s"))
         if result.ok:
             log.info("%s UP %.1f ms%s", result.name, result.latency_ms,
                      _retry_suffix(result))
@@ -1296,7 +1426,7 @@ def dry_run_check(endpoints, name=None, retry=None):
 def monitor_loop(cfg, history, path, args, stop, config_path=None,
                  reload_requested=None, max_rounds=None,
                  live_endpoints=None, live_sources=None, sla_alerts=None,
-                 cert_alerts=None):
+                 cert_alerts=None, alert_records=None):
     """Check rounds until `stop` is set; returns the config in effect
     when the loop ends.
 
@@ -1340,12 +1470,16 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
     whose certificate entered its warning window fires one webhook
     alert for that certificate (see `CertExpiryAlerter`), and
     `cert_alerts`, when given, is the shared dict the dashboard
-    server reads to show when each alert fired.
+    server reads to show when each alert fired. `alert_records`,
+    when given, is the same for down alerts: the shared dict the
+    alerter writes its last-down-alert times into, so the
+    dashboard and GET /api/status show when each endpoint last
+    paged and how long until it pages again.
     """
     state_cfg = cfg
     endpoints = list(cfg.get("endpoints", []))
     interval = cfg.get("interval_seconds", 30)
-    alerter = make_alerter(cfg, args)
+    alerter = make_alerter(cfg, args, records=alert_records)
     cert_alerter = make_cert_alerter(cfg, args, records=cert_alerts)
     sla_alerter = make_sla_alerter(cfg, args, records=sla_alerts)
     # One detector for the life of a config: the consecutive failure
@@ -1371,6 +1505,8 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
                         apply_check_interval_overrides(new_cfg, args)
                         apply_alert_threshold_overrides(new_cfg, args)
                         resolve_alert_thresholds(new_cfg, args)
+                        apply_alert_cooldown_overrides(new_cfg, args)
+                        resolve_alert_cooldowns(new_cfg, args)
                     except ValueError as exc:
                         # A flag naming an endpoint the reloaded file
                         # dropped: keep the running config, like a
@@ -1384,7 +1520,8 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
                     endpoints = list(new_cfg.get("endpoints", []))
                     new_names = {ep["name"] for ep in endpoints}
                     interval = new_cfg.get("interval_seconds", 30)
-                    alerter = make_alerter(new_cfg, args)
+                    alerter = make_alerter(new_cfg, args,
+                                           records=alert_records)
                     cert_alerter = make_cert_alerter(
                         new_cfg, args, records=cert_alerts)
                     sla_alerter = make_sla_alerter(
@@ -1482,6 +1619,10 @@ def run_forever(cfg, host, port, args=None, config_path=None):
     # Cert-expiry alerts fired, shared with the dashboard server
     # so it can show when each alert fired.
     cert_alerts = {}
+    # Down alerts fired for the current outage, shared with the
+    # dashboard server so it can show when each endpoint last
+    # paged and how long until it pages again.
+    alert_records = {}
     thread = threading.Thread(
         target=monitor_loop,
         args=(cfg, history, path, args, stop),
@@ -1490,7 +1631,8 @@ def run_forever(cfg, host, port, args=None, config_path=None):
                 "live_endpoints": live_endpoints,
                 "live_sources": live_sources,
                 "sla_alerts": sla_alerts,
-                "cert_alerts": cert_alerts},
+                "cert_alerts": cert_alerts,
+                "alert_records": alert_records},
         name="checker", daemon=True)
     thread.start()
     log.info("dashboard at http://%s:%d/ — checking %d endpoint(s) every %ds "
@@ -1500,7 +1642,7 @@ def run_forever(cfg, host, port, args=None, config_path=None):
     try:
         serve(history, live_endpoints, host=host, port=port,
               status_page_sources=live_sources, sla_alerts=sla_alerts,
-              cert_alerts=cert_alerts)
+              cert_alerts=cert_alerts, alert_records=alert_records)
     except KeyboardInterrupt:
         stop.set()
     finally:
@@ -1546,6 +1688,16 @@ def main(argv=None):
                              "endpoint; repeatable) — the endpoint still "
                              "flips DOWN at the flap threshold, the alert "
                              "just waits for N")
+    parser.add_argument("--alert-cooldown", default=None,
+                        action="append", metavar="NAME=SECONDS",
+                        help="page the named endpoint again every "
+                             "SECONDS seconds while its outage continues "
+                             "(overrides the config file's "
+                             "alert_cooldown_s for that endpoint; "
+                             "repeatable) — the first page of an outage "
+                             "is immediate, a recovery clears the "
+                             "cooldown, and without a cooldown an "
+                             "endpoint pages exactly once per outage")
     parser.add_argument("--expect-status", default=None,
                         action="append", metavar="NAME=STATUS",
                         help="require this exact HTTP status code from "
@@ -1662,6 +1814,8 @@ def main(argv=None):
         apply_check_interval_overrides(cfg, args)
         apply_alert_threshold_overrides(cfg, args)
         resolve_alert_thresholds(cfg, args)
+        apply_alert_cooldown_overrides(cfg, args)
+        resolve_alert_cooldowns(cfg, args)
     except ValueError as exc:
         parser.error(str(exc))
     history = None
