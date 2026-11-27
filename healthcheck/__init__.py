@@ -16,7 +16,7 @@ alert per crossing, and the alert shows on the dashboard and in
 GET /api/status — advisory only, it stays UP.
 """
 
-__version__ = "0.72.0"
+__version__ = "0.73.0"
 
 from .alerts import (CertExpiryAlerter, LatencyP95Alerter, SlaBreachAlerter,
                      WebhookAlerter, alert_payload,
@@ -63,14 +63,16 @@ from .incidents import (incidents_report, render_incidents_report,
 from .maintenance import (active_window, in_maintenance, summarize_windows,
                           validate_maintenance_windows)
 from .remote import ApiStatusHistory, fetch_remote_status
-from .server import (endpoint_cert_expiry_text, endpoint_headers_text,
+from .server import (cert_expiry_snapshot, endpoint_cert_expiry_text,
+                     endpoint_headers_text,
                      endpoint_http_status_text, endpoint_latency_budget_text,
                      endpoint_latency_p95_alert,
                      endpoint_latency_p95_alert_text,
                      endpoint_check_interval_text, endpoint_method_text,
                      endpoint_retries_text,
                      format_duration, incidents_snapshot,
-                     latency_sparkline, render_downtime_report,
+                     latency_sparkline, render_cert_expiry_report,
+                     render_downtime_report,
                      render_metrics, sla_snapshot,
                      status_snapshot, uptime_snapshot)
 from .sla import (breaches, monthly_detail, monthly_uptime, parse_month,
@@ -104,6 +106,7 @@ __all__ = [
     "cert_expiring_soon",
     "cert_expiry_alert_payload",
     "cert_expiry_days",
+    "cert_expiry_snapshot",
     "check_endpoint",
     "check_endpoint_with_retry",
     "check_http",
@@ -149,6 +152,7 @@ __all__ = [
     "recent_incidents",
     "reload_config",
     "render_digest_email",
+    "render_cert_expiry_report",
     "render_downtime_report",
     "render_incidents_report",
     "render_incidents_report_csv",

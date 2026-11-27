@@ -807,6 +807,85 @@ def render_downtime_report(snapshot):
     return "\n".join(lines) + "\n"
 
 
+def cert_expiry_snapshot(history, endpoints, now=None):
+    """Certificate expiry per endpoint, soonest first, as a
+    JSON-ready dict.
+
+    Returns {"generated_at": <epoch seconds>, "endpoints": [...]}
+    where each endpoint row has "name", "expires_at" (epoch, or
+    None when no certificate was ever seen), "days_remaining"
+    (whole days from `cert_expiry_days`, negative once expired,
+    or None), "warn_days" (the endpoint's
+    `cert_expiry_warn_days`, 30 by default), and "text" — the same
+    `endpoint_cert_expiry_text` the dashboard and the static
+    status page read, so the report can never disagree with them
+    ("89d", "12d (soon)", "expired", "-"). Rows are sorted
+    soonest first: expired first, then the fewest days left;
+    endpoints with no certificate seen sort last, in config
+    order. `now` pins the countdown; it defaults to the current
+    time.
+    """
+    ref = time.time() if now is None else now
+    rows = []
+    for ep in endpoints:
+        name = ep["name"]
+        expires_at = history.cert_expiry(name)
+        warn_days = ep.get("cert_expiry_warn_days")
+        if warn_days is None:
+            warn_days = DEFAULT_CERT_EXPIRY_WARN_DAYS
+        rows.append({
+            "name": name,
+            "expires_at": expires_at,
+            "days_remaining": cert_expiry_days(expires_at, now=ref),
+            "warn_days": warn_days,
+            "text": endpoint_cert_expiry_text(history, name, ep, now=ref),
+        })
+    rows.sort(key=lambda row: (row["expires_at"] is None,
+                              row["expires_at"]
+                              if row["expires_at"] is not None else 0))
+    return {"generated_at": ref, "endpoints": rows}
+
+
+def render_cert_expiry_report(snapshot):
+    """Render a cert-expiry snapshot as plain text.
+
+    One line per endpoint — the same text the dashboard shows
+    ("89d", "12d (soon)", "expired", "-"), with the endpoint's
+    warning window named — sorted soonest first, so the cert
+    that needs attention is at the top. The summary line counts
+    expired, expiring soon (inside the warning window, not yet
+    lapsed), ok, and unknown (no certificate ever seen), so an
+    operator can see the whole cert estate at a glance without
+    opening the dashboard. The report reads the last recorded
+    check per endpoint: a certificate renewed since the last
+    check still shows the old expiry until the next check runs —
+    it never probes live.
+    """
+    lines = ["Certificate expiry report (generated "
+             + time.strftime("%Y-%m-%d %H:%M:%S",
+                             time.localtime(snapshot["generated_at"]))
+             + ")"]
+    expired = soon = ok = unknown = 0
+    for row in snapshot["endpoints"]:
+        days = row["days_remaining"]
+        if days is None:
+            unknown += 1
+            lines.append(f"  {row['name']}: - (no certificate seen)")
+        else:
+            if days < 0:
+                expired += 1
+            elif cert_expiring_soon(row["expires_at"], row["warn_days"],
+                                    now=snapshot["generated_at"]):
+                soon += 1
+            else:
+                ok += 1
+            lines.append(f"  {row['name']}: {row['text']} "
+                         f"(warn {row['warn_days']}d)")
+    lines.append(f"  Summary: {expired} expired, {soon} expiring soon, "
+                 f"{ok} ok, {unknown} unknown")
+    return "\n".join(lines) + "\n"
+
+
 def incidents_snapshot(history, endpoints, limit=5, name=None, now=None):
     """Recent incidents per endpoint as a JSON-ready dict, built
     from the same `History.recent_incidents()` the dashboard, the

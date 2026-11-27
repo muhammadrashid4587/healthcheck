@@ -276,6 +276,11 @@ endpoint, and serves a small status dashboard over `http.server`.
   it fired show on the dashboard and in `GET /api/status`.
   `--cert-expiry-alert` fires the same alert once from the
   command line and exits, for a cron job or a manual check.
+  `--cert-expiry-report` prints every endpoint's certificate
+  expiry as plain text — days left, soonest first, with a
+  summary line (with `--cert-expiry-out PATH` to write it to a
+  file instead) — so an operator can see the whole cert estate
+  at a glance without opening the dashboard.
 - A JSON API: `GET /api/status` on the dashboard server returns the
   same data as JSON (status, uptime all-time / 24h / 7d, latency,
   last check, recent incidents and their duration histogram,
@@ -1782,7 +1787,7 @@ make test   # python3 -m unittest discover -s tests -v
   webhook configured anywhere it prints a note and sends
   nothing, and with no cert in its window it prints that too
   and exits 0 — done in 0.72.0.
-- [ ] `--cert-expiry-report` one-shot text report: print every
+- [x] `--cert-expiry-report` one-shot text report: print every
   endpoint's certificate expiry from the persisted history —
   days left, the warning window, `expired` once it has lapsed,
   `-` when no certificate was ever seen — from the same shared
@@ -1791,9 +1796,30 @@ make test   # python3 -m unittest discover -s tests -v
   The same shape as `--uptime-report` / `--downtime-report`
   (with `--cert-expiry-out PATH` to write it to a file), so an
   operator can see the whole cert estate at a glance without
-  opening the dashboard.
+  opening the dashboard. Sorted soonest first, with a summary
+  line counting expired, expiring soon, ok, and unknown — done
+  in 0.73.0.
 
 ## Changelog
+
+- **0.73.0** — `--cert-expiry-report` one-shot text report: the
+  flag prints every endpoint's certificate expiry from the
+  persisted history (needs `history_file` in the config, or
+  `--history-file`) as plain text — one line per endpoint, the
+  same text the dashboard shows ("89d", "12d (soon)", "expired",
+  "-") with the endpoint's warning window named, sorted soonest
+  first so the cert that needs attention is at the top, plus a
+  summary line counting expired, expiring soon, ok, and unknown
+  — with `--cert-expiry-out PATH` to write it to a file instead
+  of printing it, the same shape as `--uptime-report` /
+  `--downtime-report`. It reads the same shared
+  `endpoint_cert_expiry_text` the dashboard and the static status
+  page read, so the report can never disagree with them. Honest
+  limit: the report reads the last recorded check per endpoint —
+  a certificate renewed since the last check still shows the old
+  expiry until the next check runs; it never probes live. Next:
+  the roadmap is now exhausted; the natural next item is a
+  certificate-expiry section in the periodic digest.
 
 - **0.72.0** — `--cert-expiry-alert` one-shot CLI: the flag
   fires the cert-expiry alerts once from the command line and

@@ -37,7 +37,8 @@ from .incidents import (incidents_report, render_incidents_report,
 from .maintenance import (active_window, summarize_window,
                           validate_maintenance_windows)
 from .remote import fetch_remote_status
-from .server import (render_downtime_report, render_uptime_report,
+from .server import (cert_expiry_snapshot, render_cert_expiry_report,
+                     render_downtime_report, render_uptime_report,
                      serve, uptime_snapshot)
 from .sla import (breaches, monthly_detail, monthly_uptime, parse_month,
                   render_sla_report, render_sla_report_csv,
@@ -1958,6 +1959,13 @@ def main(argv=None):
                              "Needs a webhook URL in the config (or "
                              "--webhook-url) or a per-endpoint webhook "
                              "— with none configured, nothing is sent")
+    parser.add_argument("--cert-expiry-report", action="store_true",
+                        help="print every endpoint's certificate expiry "
+                             "from the persisted history (days left, "
+                             "soonest first, with a summary line) and exit")
+    parser.add_argument("--cert-expiry-out", default=None, metavar="PATH",
+                        help="write the --cert-expiry-report output to PATH "
+                             "instead of printing it")
     args = parser.parse_args(argv)
     if args.status_page_source and not args.status_page:
         parser.error("--status-page-source needs --status-page")
@@ -1972,6 +1980,8 @@ def main(argv=None):
         parser.error("--uptime-out needs --uptime-report")
     if args.downtime_out and not args.downtime_report:
         parser.error("--downtime-out needs --downtime-report")
+    if args.cert_expiry_out and not args.cert_expiry_report:
+        parser.error("--cert-expiry-out needs --cert-expiry-report")
     cfg = load_config(args.config)
     try:
         apply_expect_status_overrides(cfg, args)
@@ -2054,6 +2064,17 @@ def main(argv=None):
         output = render_downtime_report(snapshot)
         if args.downtime_out:
             with open(args.downtime_out, "w", encoding="utf-8") as fh:
+                fh.write(output)
+        else:
+            print(output, end="")
+        return 0
+    if args.cert_expiry_report:
+        path = history_path(cfg, args)
+        history = load_history(path, maxlen=cfg.get("history", 100))
+        snapshot = cert_expiry_snapshot(history, cfg.get("endpoints", []))
+        output = render_cert_expiry_report(snapshot)
+        if args.cert_expiry_out:
+            with open(args.cert_expiry_out, "w", encoding="utf-8") as fh:
                 fh.write(output)
         else:
             print(output, end="")
