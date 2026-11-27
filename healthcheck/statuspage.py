@@ -4,7 +4,8 @@ HTML file that can be hosted anywhere with no server.
 `render_status_page` builds the same view as the live dashboard —
 current status per endpoint, how long the current outage has
 lasted, uptime all-time / 24h / 7d / 30d, most recent
-latency, an inline latency sparkline, and the Alert at / Cooldown
+latency, latency p50 / p95 / p99 over the last 24 hours, an inline
+latency sparkline, and the Alert at / Cooldown
 columns next to the Fail streak, plus the Method, Headers, HTTP
 status and Cert expires columns after the Cooldown column — plus a
 recent-incidents list
@@ -28,7 +29,12 @@ the time a cert-expiry alert fired. An extra source's endpoints
 carry no config, so they show "-" for Method and Headers; a file
 source still shows real HTTP status and Cert expires from its
 recorded checks, while a remote source shows "-" for those too —
-a snapshot carries no per-check records. The Down since column is the same figure the dashboard
+a snapshot carries no per-check records. The Latency p50 / p95 / p99 column is the
+nearest-rank percentiles over the last 24 hours of recorded
+latencies, from the same `latency_percentiles_text` the dashboard
+reads, so the two pages can never disagree — "-" when the
+endpoint has no recorded latencies in the window, and for a
+remote source, whose snapshot carries no per-check records. The Down since column is the same figure the dashboard
 shows, from the same `History.down_since()` — the duration from
 the first failed check in the current run of failures (unconfirmed
 failures included) to the page's generated time, "-" when the
@@ -57,7 +63,8 @@ import time
 from .flap import DEFAULT_THRESHOLD
 from .server import (endpoint_cert_expiry_text, endpoint_headers_text,
                      endpoint_http_status_text, endpoint_method_text,
-                     format_duration, latency_sparkline)
+                     format_duration, latency_percentiles_text,
+                     latency_sparkline)
 
 # How many recent incidents to list per endpoint.
 DEFAULT_INCIDENT_LIMIT = 5
@@ -212,6 +219,14 @@ def _render_source(history, endpoints, generated, label=None):
         http_status = endpoint_http_status_text(ep, cur)
         cert_text = endpoint_cert_expiry_text(history, name, ep,
                                               now=generated)
+        # Latency p50 / p95 / p99 over the last 24 hours, from
+        # the same helper the dashboard reads, so the two pages
+        # can never disagree — "-" when the endpoint has no
+        # recorded latencies in the window (never checked, only
+        # skips / maintenance) or is a remote source, whose
+        # snapshot carries no per-check records.
+        pct_text = latency_percentiles_text(history, name,
+                                            now=generated)
         rows.append(
             f"<tr><td>{html.escape(name)}</td>"
             f"<td class=\"{cls}\">{status}{status_detail}</td>"
@@ -224,6 +239,7 @@ def _render_source(history, endpoints, generated, label=None):
             f"<td>{html.escape(http_status)}</td>"
             f"<td>{html.escape(cert_text)}</td>"
             f"<td>{up}</td><td>{day}</td><td>{week}</td><td>{month}</td><td>{latency}</td>"
+            f"<td>{html.escape(pct_text)}</td>"
             f"<td>{latency_sparkline(history, name)}</td><td>{last}</td></tr>"
         )
         incidents = recent_incidents(history, name, now=generated)
@@ -255,7 +271,7 @@ def _render_source(history, endpoints, generated, label=None):
                 f"<h3>{html.escape(name)}</h3><ul>{''.join(items)}</ul>"
                 f"<p>Duration histogram: {buckets}</p>")
     body = "\n".join(rows) or \
-        "<tr><td colspan=\"17\">No endpoints configured.</td></tr>"
+        "<tr><td colspan=\"18\">No endpoints configured.</td></tr>"
     if down_count:
         banner = (f"<p class=\"banner down\">{down_count} endpoint"
                   f"{'s' if down_count != 1 else ''} down</p>")
@@ -271,6 +287,7 @@ def _render_source(history, endpoints, generated, label=None):
         "<th>Method</th><th>Headers</th><th>HTTP status</th>"
         "<th>Cert expires</th><th>Uptime</th>"
         "<th>Uptime 24h</th><th>Uptime 7d</th><th>Uptime 30d</th><th>Latency</th>"
+        "<th>Latency p50 / p95 / p99</th>"
         "<th>Latency history</th><th>Last check</th></tr>\n"
         f"{body}</table>")
     if label is None:

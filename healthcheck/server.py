@@ -173,6 +173,24 @@ def endpoint_cert_expiry_text(history, name, ep, now=None,
     return text
 
 
+def latency_percentiles_text(history, name, now=None):
+    """Latency p50 / p95 / p99 for an endpoint, or "-".
+
+    Nearest-rank percentiles over the last 24 hours of recorded
+    latencies, from the same `History.latency_percentiles()` the
+    JSON API reports — "12.0 / 45.0 / 90.0 ms" — or "-" when the
+    endpoint has no recorded latencies in the window (never
+    checked, only skips / maintenance, or a remote snapshot that
+    carries no per-check records). Shared by the dashboard and
+    the static status page, so the two can never disagree.
+    """
+    pct = history.latency_percentiles(name, now=now)
+    if pct is None:
+        return "-"
+    return (f"{pct['p50']:.1f} / {pct['p95']:.1f} / "
+            f"{pct['p99']:.1f} ms")
+
+
 def status_snapshot(history, endpoints, now=None,
                     status_page_sources=None, sla_alerts=None,
                     cert_alerts=None, alert_records=None):
@@ -882,9 +900,7 @@ def render_dashboard(history, endpoints, now=None,
         day = f"{up_24h:.1f}%" if up_24h is not None else "-"
         week = f"{up_7d:.1f}%" if up_7d is not None else "-"
         month = f"{up_30d:.1f}%" if up_30d is not None else "-"
-        pct = history.latency_percentiles(name, now=now)
-        pct_text = (f"{pct['p50']:.1f} / {pct['p95']:.1f} / {pct['p99']:.1f} ms"
-                    if pct is not None else "-")
+        pct_text = latency_percentiles_text(history, name, now=now)
         budget = ep.get("max_latency_ms")
         budget_text = f"{budget:g} ms" if budget is not None else "-"
         interval = ep.get("check_interval_s")

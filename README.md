@@ -113,7 +113,8 @@ endpoint, and serves a small status dashboard over `http.server`.
 - A static status page: `python3 -m healthcheck.cli --config config.json --status-page status.html`
   renders the same view as the dashboard — current status, how long
   the current outage has lasted, uptime
-  24h/7d/30d, latency sparkline, and the Alert at / Cooldown
+  24h/7d/30d, latency sparkline, latency p50 / p95 / p99 over the
+  last 24 hours, and the Alert at / Cooldown
   columns next to the Fail streak, plus the Method, Headers, HTTP
   status, and Cert expires columns after the Cooldown column — plus
   a recent-incidents list per
@@ -1460,8 +1461,28 @@ make test   # python3 -m unittest discover -s tests -v
   never disagree; a snapshot carries no alert records, so the
   page does not append the time a cert-expiry alert fired, and
   a remote source shows `-` for all four — done in 0.58.0.
+- [x] Latency p50 / p95 / p99 column on the static status page: the
+  `--status-page` output gains the same column the dashboard
+  shows, right after Latency and before the latency sparkline —
+  nearest-rank p50/p95/p99 over the last 24 hours of recorded
+  latencies, from a shared `latency_percentiles_text` helper the
+  dashboard reads too, so the two pages can never disagree. `-`
+  when the endpoint has no recorded latencies in the window
+  (never checked, only skips / maintenance), and for a remote
+  source, whose snapshot carries no per-check records — done in
+  0.59.0.
 
 ## Changelog
+
+- **0.59.0** — Latency p50 / p95 / p99 column on the static status
+  page: the `--status-page` output gains the same column the
+  dashboard has, right after Latency and before the latency
+  sparkline — nearest-rank p50/p95/p99 over the last 24 hours of
+  recorded latencies, from a shared `latency_percentiles_text`
+  helper the dashboard reads too, so the two pages can never
+  disagree. `-` when the endpoint has no recorded latencies in
+  the window (never checked, only skips / maintenance), and for a
+  remote source, whose snapshot carries no per-check records.
 
 - **0.58.0** — Cert expires, Method, Headers, and HTTP status
   columns on the static status page: the `--status-page` output

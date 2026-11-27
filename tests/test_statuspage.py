@@ -366,6 +366,49 @@ class RenderTests(unittest.TestCase):
         self.assertIn("<td>-</td><td>-</td><td>-</td><td>-</td>",
                       page)
 
+    def test_latency_percentiles_column(self):
+        # The static page carries the same Latency p50 / p95 / p99
+        # column as the dashboard, right after Latency and before
+        # the sparkline: nearest-rank percentiles over the last 24
+        # hours of recorded latencies. A check older than the
+        # window does not count, and a never-checked endpoint
+        # shows "-".
+        hist = History()
+        hist.record(_result("web", True, latency=999.0,
+                            at=BASE - 25 * 3600))
+        hist.record(_result("web", True, latency=10.0, at=BASE))
+        hist.record(_result("web", True, latency=20.0, at=BASE + 10))
+        hist.record(_result("web", True, latency=30.0, at=BASE + 20))
+        page = render_status_page(
+            hist,
+            [{"name": "web", "type": "http",
+              "url": "http://example.com"},
+             {"name": "ghost", "type": "http",
+              "url": "http://ghost.example.com"}],
+            now=BASE + 200)
+        self.assertIn(
+            "<th>Latency</th><th>Latency p50 / p95 / p99</th>"
+            "<th>Latency history</th>",
+            page)
+        self.assertIn("<td>20.0 / 30.0 / 30.0 ms</td>", page)
+        # ghost's row ends Latency / percentiles / sparkline /
+        # last check, all "-".
+        self.assertIn("<td>-</td><td>-</td><td>-</td><td>-</td></tr>",
+                      page)
+
+    def test_remote_source_percentiles_column_is_dash(self):
+        # A remote source's snapshot carries no per-check records,
+        # so its percentiles column is "-", like the dashboard's
+        # sparkline for the same source.
+        page = render_status_page(
+            History(), [], now=BASE + 200,
+            extra_sources=[("remote", History(),
+                            [{"name": "web"}])])
+        self.assertIn("<h2>remote</h2>", page)
+        self.assertIn("<th>Latency p50 / p95 / p99</th>", page)
+        self.assertIn("<td>-</td><td>-</td><td>-</td><td>-</td></tr>",
+                      page)
+
     def test_extra_source_file_keeps_status_and_cert(self):
         # A file extra source's endpoints carry no config, so
         # Method and Headers are "-", but HTTP status and Cert
