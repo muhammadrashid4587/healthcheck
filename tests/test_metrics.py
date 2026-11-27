@@ -177,6 +177,71 @@ class MetricsTests(unittest.TestCase):
         self.assertNotIn(
             ("healthcheck_uptime_ratio_30d", (("name", "fresh"),)), m)
 
+    def test_downtime_seconds_gauges(self):
+        # A one-hour outage inside every window, and a day-long
+        # outage 10 days ago that only the 30-day window covers.
+        now = 1_700_000_000.0
+        hist = History()
+        hist.record(_result("db", False, at=now - 3600))
+        hist.record(_result("db", True, at=now))
+        hist.record(_result("web", False, at=now - 10 * 86400))
+        hist.record(_result("web", True, at=now - 9 * 86400))
+        m = _metrics(render_metrics(hist, self.endpoints, now=now))
+        for suffix in ("24h", "7d", "30d"):
+            self.assertEqual(
+                m[(f"healthcheck_downtime_seconds_{suffix}",
+                   (("name", "db"),))], "3600.0")
+        self.assertEqual(
+            m[("healthcheck_downtime_seconds_24h",
+               (("name", "web"),))], "0.0")
+        self.assertEqual(
+            m[("healthcheck_downtime_seconds_7d",
+               (("name", "web"),))], "0.0")
+        self.assertEqual(
+            m[("healthcheck_downtime_seconds_30d",
+               (("name", "web"),))], "86400.0")
+
+    def test_downtime_seconds_gauge_ongoing_outage_accrues_to_now(self):
+        # An outage still open at the request time accrues
+        # downtime to now in every window it falls in.
+        now = 1_700_000_000.0
+        hist = History()
+        hist.record(_result("db", False, at=now - 600))
+        m = _metrics(render_metrics(hist, self.endpoints[:1] + [
+            {"name": "db", "type": "tcp", "host": "127.0.0.1",
+             "port": 5432}], now=now))
+        for suffix in ("24h", "7d", "30d"):
+            self.assertEqual(
+                m[(f"healthcheck_downtime_seconds_{suffix}",
+                   (("name", "db"),))], "600.0")
+
+    def test_downtime_seconds_gauges_always_present(self):
+        # A never-checked endpoint has 0 downtime in every window,
+        # not an omitted series — the gauges are safe to alert on.
+        m = _metrics(render_metrics(self.history, self.endpoints + [
+            {"name": "fresh", "type": "tcp", "host": "127.0.0.1", "port": 1}],
+            now=1_700_000_000.0))
+        for suffix in ("24h", "7d", "30d"):
+            self.assertEqual(
+                m[(f"healthcheck_downtime_seconds_{suffix}",
+                   (("name", "fresh"),))], "0.0")
+
+    def test_downtime_seconds_gauges_agree_with_api_status(self):
+        # The gauges read the same downtime_seconds_window figure
+        # GET /api/status reports as downtime_*_seconds, so the
+        # two can never disagree.
+        from healthcheck.server import status_snapshot
+        snap = status_snapshot(self.history, self.endpoints,
+                               now=1_700_000_000.0)
+        m = _metrics(render_metrics(self.history, self.endpoints,
+                                    now=1_700_000_000.0))
+        for row in snap["endpoints"]:
+            for suffix in ("24h", "7d", "30d"):
+                self.assertEqual(
+                    m[(f"healthcheck_downtime_seconds_{suffix}",
+                       (("name", row["name"]),))],
+                    str(row[f"downtime_{suffix}_seconds"]))
+
     def test_latency_summary_quantiles_sum_and_count(self):
         hist = History()
         for latency in (10.0, 20.0, 30.0, 40.0, 50.0,

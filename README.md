@@ -876,6 +876,14 @@ checks that were up, all-time) plus `healthcheck_uptime_ratio_24h`,
 `healthcheck_uptime_ratio_7d`, and `healthcheck_uptime_ratio_30d`
 (the 30-day figure is the same one `GET /api/uptime` reports as
 `uptime_30d_pct`, so the gauge and the API can never disagree),
+`healthcheck_downtime_seconds_24h`, `healthcheck_downtime_seconds_7d`,
+and `healthcheck_downtime_seconds_30d` (gauges, total outage time in
+seconds inside the last 24 hours / 7 days / 30 days — the same
+figures `GET /api/status` reports as `downtime_24h_seconds` /
+`downtime_7d_seconds` / `downtime_30d_seconds`, so the gauges and
+the API can never disagree; always present, even at 0, so a
+Prometheus server can alert when the 30-day downtime passes a
+budget),
 (gauge, whole days until the endpoint's TLS certificate expires —
 negative when expired, omitted when no expiry was recorded),
 `healthcheck_latency_ms` (summary
@@ -1584,8 +1592,33 @@ make test   # python3 -m unittest discover -s tests -v
   disagree. An outage that started before the window only counts
   the part inside it, and an ongoing outage accrues to the page's
   render time — done in 0.65.0.
+- [x] Downtime gauges in `GET /metrics`:
+  `healthcheck_downtime_seconds_24h` / `_7d` / `_30d` expose the
+  total outage time in seconds inside the last 24 hours / 7 days /
+  30 days per endpoint, so a Prometheus server can alert on
+  cumulative downtime (e.g. when the 30-day downtime passes a
+  budget). Each reads the same `History.downtime_seconds_window`
+  figure `GET /api/status` reports as `downtime_24h_seconds` /
+  `downtime_7d_seconds` / `downtime_30d_seconds`, so the gauges
+  and the API can never disagree — an outage that started before
+  a window only counts the part inside it, and an ongoing outage
+  accrues to the request time. Always present, even at 0, like
+  `healthcheck_incidents_total` — done in 0.66.0.
 
 ## Changelog
+
+- **0.66.0** — Downtime gauges in `GET /metrics`:
+  `healthcheck_downtime_seconds_24h` / `_7d` / `_30d` expose the
+  total outage time in seconds inside the last 24 hours / 7 days /
+  30 days per endpoint, so a Prometheus server can alert on
+  cumulative downtime (e.g. when the 30-day downtime passes a
+  budget). Each reads the same `History.downtime_seconds_window`
+  figure `GET /api/status` reports as `downtime_24h_seconds` /
+  `downtime_7d_seconds` / `downtime_30d_seconds`, so the gauges
+  and the API can never disagree — an outage that started before
+  a window only counts the part inside it, and an ongoing outage
+  accrues to the request time. Always present, even at 0, like
+  `healthcheck_incidents_total`.
 
 - **0.65.0** — Downtime column on the live dashboard: the dashboard
   gains the same Downtime 30d column the static status page shows,

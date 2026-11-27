@@ -763,6 +763,17 @@ def render_metrics(history, endpoints, now=None):
       ``uptime_pct_window`` figure `GET /api/uptime` reports as
       ``uptime_30d_pct``, so the gauge and the API can never
       disagree.
+    - ``healthcheck_downtime_seconds_24h`` / ``_7d`` / ``_30d``
+      (gauges): total outage time in seconds inside the last 24
+      hours / 7 days / 30 days. Always present, even at 0, so the
+      series is safe to alert on (e.g. alert when the 30-day
+      downtime passes a budget). Each reads the same
+      ``downtime_seconds_window`` figure `GET /api/status`
+      reports as ``downtime_24h_seconds`` / ``downtime_7d_seconds``
+      / ``downtime_30d_seconds``, so the gauges and the API can
+      never disagree — an outage that started before a window
+      only counts the part inside it, and an ongoing outage
+      accrues to the request time.
     - ``healthcheck_latency_ms`` (summary): nearest-rank p50/p95/p99
       in ms over the last 24 hours, plus ``_sum`` and ``_count``.
       Skipped and maintenance checks never ran and are excluded;
@@ -852,6 +863,18 @@ def render_metrics(history, endpoints, now=None):
                 lines.append(
                     f'healthcheck_uptime_ratio_{suffix}'
                     f'{{name="{_prom_label(ep["name"])}"}} {pct / 100.0}')
+    for window, suffix in ((24 * 3600, "24h"), (7 * 24 * 3600, "7d"),
+                           (30 * 24 * 3600, "30d")):
+        lines.append(f"# HELP healthcheck_downtime_seconds_{suffix} "
+                     f"Total outage time in seconds over the last "
+                     f"{suffix}.")
+        lines.append(f"# TYPE healthcheck_downtime_seconds_{suffix} gauge")
+        for ep in endpoints:
+            downtime = history.downtime_seconds_window(ep["name"], window,
+                                                       now=now)
+            lines.append(
+                f'healthcheck_downtime_seconds_{suffix}'
+                f'{{name="{_prom_label(ep["name"])}"}} {downtime}')
     lines.append("# HELP healthcheck_latency_ms Check latency in ms over "
                  "the last 24 hours.")
     lines.append("# TYPE healthcheck_latency_ms summary")
