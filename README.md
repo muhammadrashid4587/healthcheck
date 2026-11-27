@@ -111,7 +111,8 @@ endpoint, and serves a small status dashboard over `http.server`.
   down) and in `GET /metrics` as a `healthcheck_down_seconds` gauge
   (0 when up).
 - A static status page: `python3 -m healthcheck.cli --config config.json --status-page status.html`
-  renders the same view as the dashboard — current status, uptime
+  renders the same view as the dashboard — current status, how long
+  the current outage has lasted, uptime
   24h/7d/30d, latency sparkline, and the Alert at / Cooldown
   columns next to the Fail streak — plus a recent-incidents list per
   endpoint, as one self-contained HTML file with no external
@@ -123,6 +124,11 @@ endpoint, and serves a small status dashboard over `http.server`.
   re-pages); a snapshot carries no alert records, so unlike the
   live dashboard it shows the configured cooldown rather than
   the time until the next re-page while an endpoint is DOWN.
+  The Down since column is the same figure the dashboard shows,
+  from the same `History.down_since()` — the duration from the
+  first failed check in the current run of failures (unconfirmed
+  failures included) to the page's generated time, `-` when the
+  endpoint is not DOWN.
   Combine with `--once` to check first, then render.
   `--status-page-source LABEL=PATH` (repeatable) merges another
   healthcheck instance's persisted history into the same page under
@@ -1409,8 +1415,31 @@ make test   # python3 -m unittest discover -s tests -v
   page shows the configured cooldown, not the live re-alert
   countdown the dashboard appends while an endpoint is DOWN —
   done in 0.56.0.
+- [x] Down since column on the static status page: the
+  `--status-page` output gains the same Down since column the
+  dashboard shows, right after Status and before the Fail
+  streak — how long the current outage has lasted ("12m 34s",
+  `-` when not down), counted from the first failed check in
+  the current run of failures (unconfirmed failures included)
+  to the page's generated time, from the same
+  `History.down_since()` the dashboard reads, so the two can
+  never disagree. A still-UP endpoint with failures below the
+  flap threshold shows `-`, like the dashboard — its run is
+  visible in the Fail streak instead — done in 0.57.0.
 
 ## Changelog
+
+- **0.57.0** — Down since column on the static status page: the
+  `--status-page` output gains the same Down since column the
+  dashboard has, right after Status and before the Fail streak —
+  how long the current outage has lasted ("12m 34s", `-` when
+  not down), counted from the first failed check in the current
+  run of failures (unconfirmed failures included) to the page's
+  generated time, from the same `History.down_since()` the
+  dashboard reads, so the two surfaces can never disagree. A
+  still-UP endpoint with failures below the flap threshold shows
+  `-`, like the dashboard — its run is visible in the Fail streak
+  instead.
 
 - **0.56.0** — Alert at / Cooldown columns on the static status
   page: the `--status-page` output gains the same Alert at and

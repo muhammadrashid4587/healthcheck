@@ -249,6 +249,50 @@ class RenderTests(unittest.TestCase):
         # default 3, no cooldown.
         self.assertIn("<td>1</td><td>3</td><td>-</td>", page)
 
+    def test_down_since_column(self):
+        # The static page carries the same Down since column as
+        # the dashboard, right after Status and before the Fail
+        # streak: web has been DOWN since BASE + 60 (three failed
+        # checks in a row, so confirmed), so at the page's
+        # generated time (BASE + 200) the outage is 2m 20s old;
+        # db is UP, so it shows "-".
+        hist = History()
+        hist.record(_result("web", True, at=BASE))
+        hist.record(_result("web", False, at=BASE + 60))
+        hist.record(_result("web", False, at=BASE + 120))
+        hist.record(_result("web", False, at=BASE + 180))
+        hist.record(_result("db", True, at=BASE + 180))
+        page = render_status_page(
+            hist,
+            [{"name": "web", "type": "http",
+              "url": "http://example.com"},
+             {"name": "db", "type": "tcp", "host": "127.0.0.1",
+              "port": 5432}],
+            now=BASE + 200)
+        self.assertIn(
+            "<th>Status</th><th>Down since</th><th>Fail streak</th>",
+            page)
+        self.assertIn("<td class=\"down\">DOWN</td><td>2m 20s</td>",
+                      page)
+        self.assertIn("<td class=\"up\">UP</td><td>-</td>", page)
+
+    def test_down_since_is_dash_for_unconfirmed_failures(self):
+        # A still-UP endpoint with failures below the flap
+        # threshold has no outage clock on the page, like the
+        # dashboard: its run is visible in the Fail streak
+        # instead, not as a Down since.
+        hist = History()
+        hist.record(_result("web", True, at=BASE))
+        hist.record(_result("web", False, at=BASE + 60,
+                            unconfirmed=True))
+        page = render_status_page(
+            hist,
+            [{"name": "web", "type": "http",
+              "url": "http://example.com"}],
+            now=BASE + 200)
+        self.assertIn("<td class=\"up\">UP</td><td>-</td><td>1</td>",
+                      page)
+
     def test_empty_endpoints(self):
         page = render_status_page(History(), [], now=BASE)
         self.assertIn("No endpoints configured.", page)

@@ -2,12 +2,17 @@
 HTML file that can be hosted anywhere with no server.
 
 `render_status_page` builds the same view as the live dashboard —
-current status per endpoint, uptime all-time / 24h / 7d / 30d, most recent
+current status per endpoint, how long the current outage has
+lasted, uptime all-time / 24h / 7d / 30d, most recent
 latency, an inline latency sparkline, and the Alert at / Cooldown
 columns next to the Fail streak — plus a recent-incidents list
 per endpoint, derived from the persisted check history, and each
 endpoint's per-incident duration histogram over those same
-incidents. The Alert at column is the endpoint's own
+incidents. The Down since column is the same figure the dashboard
+shows, from the same `History.down_since()` — the duration from
+the first failed check in the current run of failures (unconfirmed
+failures included) to the page's generated time, "-" when the
+endpoint is not DOWN. The Alert at column is the endpoint's own
 `alert_threshold` (the flap threshold in effect when it sets none)
 and the Cooldown column is its `alert_cooldown_s` ("-" when it
 never re-pages); a static snapshot carries no alert records, so
@@ -30,7 +35,7 @@ import os
 import time
 
 from .flap import DEFAULT_THRESHOLD
-from .server import latency_sparkline
+from .server import format_duration, latency_sparkline
 
 # How many recent incidents to list per endpoint.
 DEFAULT_INCIDENT_LIMIT = 5
@@ -125,6 +130,17 @@ def _render_source(history, endpoints, generated, label=None):
             status_detail = f" — {html.escape(cur.get('error') or '')}"
         else:
             status_detail = ""
+        # How long the current outage has lasted, exactly as the
+        # dashboard shows it: from the first failed check in the
+        # current run (unconfirmed failures included) to the
+        # page's generated time, from the same
+        # `History.down_since()` the dashboard reads, so the two
+        # can never disagree. "-" when the endpoint is not DOWN —
+        # a still-UP endpoint with 1 or 2 failures shows its
+        # streak in the next column instead.
+        since = history.down_since(name)
+        down_text = (format_duration(generated - since)
+                     if status == "DOWN" and since is not None else "-")
         up = f"{uptime:.1f}%" if uptime is not None else "-"
         day = f"{up_24h:.1f}%" if up_24h is not None else "-"
         week = f"{up_7d:.1f}%" if up_7d is not None else "-"
@@ -154,6 +170,7 @@ def _render_source(history, endpoints, generated, label=None):
         rows.append(
             f"<tr><td>{html.escape(name)}</td>"
             f"<td class=\"{cls}\">{status}{status_detail}</td>"
+            f"<td>{down_text}</td>"
             f"<td>{history.consecutive_failures(name)}</td>"
             f"<td>{alert_at}</td>"
             f"<td>{cooldown_text}</td>"
@@ -189,7 +206,7 @@ def _render_source(history, endpoints, generated, label=None):
                 f"<h3>{html.escape(name)}</h3><ul>{''.join(items)}</ul>"
                 f"<p>Duration histogram: {buckets}</p>")
     body = "\n".join(rows) or \
-        "<tr><td colspan=\"12\">No endpoints configured.</td></tr>"
+        "<tr><td colspan=\"13\">No endpoints configured.</td></tr>"
     if down_count:
         banner = (f"<p class=\"banner down\">{down_count} endpoint"
                   f"{'s' if down_count != 1 else ''} down</p>")
@@ -199,7 +216,8 @@ def _render_source(history, endpoints, generated, label=None):
                       if incident_sections
                       else "<p>No incidents recorded.</p>")
     table = (
-        "<table><tr><th>Endpoint</th><th>Status</th><th>Fail streak</th>"
+        "<table><tr><th>Endpoint</th><th>Status</th><th>Down since</th>"
+        "<th>Fail streak</th>"
         "<th>Alert at</th><th>Cooldown</th><th>Uptime</th>"
         "<th>Uptime 24h</th><th>Uptime 7d</th><th>Uptime 30d</th><th>Latency</th>"
         "<th>Latency history</th><th>Last check</th></tr>\n"
