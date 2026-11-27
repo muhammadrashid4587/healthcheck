@@ -112,10 +112,17 @@ endpoint, and serves a small status dashboard over `http.server`.
   (0 when up).
 - A static status page: `python3 -m healthcheck.cli --config config.json --status-page status.html`
   renders the same view as the dashboard — current status, uptime
-  24h/7d/30d, latency sparkline — plus a recent-incidents list per
+  24h/7d/30d, latency sparkline, and the Alert at / Cooldown
+  columns next to the Fail streak — plus a recent-incidents list per
   endpoint, as one self-contained HTML file with no external
   references, so it can be hosted anywhere with no server. It is a
   snapshot of the persisted history; regenerate it to update it.
+  The Alert at column is the endpoint's own `alert_threshold`
+  (the flap threshold in effect when it sets none) and the
+  Cooldown column is its `alert_cooldown_s` (`-` when it never
+  re-pages); a snapshot carries no alert records, so unlike the
+  live dashboard it shows the configured cooldown rather than
+  the time until the next re-page while an endpoint is DOWN.
   Combine with `--once` to check first, then render.
   `--status-page-source LABEL=PATH` (repeatable) merges another
   healthcheck instance's persisted history into the same page under
@@ -1392,9 +1399,30 @@ make test   # python3 -m unittest discover -s tests -v
   `GET /api/status` gains `alert_cooldown_s`,
   `last_alerted_at`, and `alert_cooldown_remaining_s` per
   endpoint — done in 0.55.0.
+- [x] Alert at / Cooldown columns on the static status page: the
+  `--status-page` output gains the same Alert at and Cooldown
+  columns the dashboard shows, right after the Fail streak — the
+  endpoint's own `alert_threshold` (the flap threshold in effect
+  when it sets none, resolved by the CLI before the page is
+  written) and its `alert_cooldown_s` (`-` when it never
+  re-pages). A static snapshot carries no alert records, so the
+  page shows the configured cooldown, not the live re-alert
+  countdown the dashboard appends while an endpoint is DOWN —
+  done in 0.56.0.
 
 ## Changelog
 
+- **0.56.0** — Alert at / Cooldown columns on the static status
+  page: the `--status-page` output gains the same Alert at and
+  Cooldown columns the dashboard has, right after the Fail
+  streak — the endpoint's own `alert_threshold` (the flap
+  threshold in effect when it sets none, resolved by the CLI
+  before the page is written) and its `alert_cooldown_s`
+  (`-` when it never re-pages). A static snapshot carries no
+  alert records, so it shows the configured cooldown rather
+  than the live dashboard's time until the next re-page while
+  an endpoint is DOWN — the same value the dashboard shows
+  once the endpoint has recovered.
 - **0.55.0** — Per-endpoint alert cooldown / re-alert interval: an
   endpoint that stays down pages again once `alert_cooldown_s`
   seconds have passed since its last down alert — a long outage

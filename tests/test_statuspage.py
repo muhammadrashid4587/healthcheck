@@ -225,10 +225,65 @@ class RenderTests(unittest.TestCase):
         self.assertNotIn("<b>x</b>", page)
         self.assertIn("&lt;b&gt;x&lt;/b&gt;", page)
 
+    def test_alert_at_and_cooldown_columns(self):
+        # The static page carries the same Alert at / Cooldown
+        # columns as the dashboard, right after the Fail streak:
+        # web pages at 5 failures and re-pages every 300 s, db
+        # uses the defaults (alert at the flap threshold, 3, and
+        # no re-paging).
+        page = render_status_page(
+            self.history,
+            [{"name": "web", "type": "http",
+              "url": "http://example.com",
+              "alert_threshold": 5, "alert_cooldown_s": 300},
+             {"name": "db", "type": "tcp", "host": "127.0.0.1",
+              "port": 5432}],
+            now=BASE + 200)
+        self.assertIn(
+            "<th>Fail streak</th><th>Alert at</th><th>Cooldown</th>",
+            page)
+        # web's row: streak 0 (last check up), alert at 5,
+        # cooldown "300 s".
+        self.assertIn("<td>0</td><td>5</td><td>300 s</td>", page)
+        # db's row: streak 1 (one failed check), alert at the
+        # default 3, no cooldown.
+        self.assertIn("<td>1</td><td>3</td><td>-</td>", page)
+
     def test_empty_endpoints(self):
         page = render_status_page(History(), [], now=BASE)
         self.assertIn("No endpoints configured.", page)
         self.assertIn("All systems operational", page)
+
+
+class CliAlertColumnsTests(unittest.TestCase):
+    def test_status_page_resolves_threshold_and_cooldown(self):
+        # Through the CLI the page shows the *resolved* values:
+        # the configured flap_threshold (4) fills in an endpoint
+        # without its own alert_threshold, and the global
+        # alert_cooldown_s (300) fills in one without its own.
+        with tempfile.TemporaryDirectory() as d:
+            cfg_path = os.path.join(d, "config.json")
+            out_path = os.path.join(d, "status.html")
+            with open(cfg_path, "w", encoding="utf-8") as fh:
+                json.dump({
+                    "flap_threshold": 4,
+                    "alert_cooldown_s": 300,
+                    "endpoints": [
+                        {"name": "web", "type": "http",
+                         "url": "http://example.com",
+                         "alert_threshold": 5},
+                        {"name": "db", "type": "tcp",
+                         "host": "127.0.0.1", "port": 5432},
+                    ]}, fh)
+            self.assertEqual(
+                main(["--config", cfg_path, "--status-page",
+                      out_path]), 0)
+            with open(out_path, encoding="utf-8") as fh:
+                page = fh.read()
+        # web: its own alert threshold 5, the global cooldown.
+        self.assertIn("<td>5</td><td>300 s</td>", page)
+        # db: the flap threshold 4 in effect, the global cooldown.
+        self.assertIn("<td>4</td><td>300 s</td>", page)
 
 
 class WriteTests(unittest.TestCase):

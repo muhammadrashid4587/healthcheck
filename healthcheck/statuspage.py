@@ -3,10 +3,18 @@ HTML file that can be hosted anywhere with no server.
 
 `render_status_page` builds the same view as the live dashboard —
 current status per endpoint, uptime all-time / 24h / 7d / 30d, most recent
-latency, an inline latency sparkline — plus a recent-incidents list
+latency, an inline latency sparkline, and the Alert at / Cooldown
+columns next to the Fail streak — plus a recent-incidents list
 per endpoint, derived from the persisted check history, and each
 endpoint's per-incident duration histogram over those same
-incidents. The output
+incidents. The Alert at column is the endpoint's own
+`alert_threshold` (the flap threshold in effect when it sets none)
+and the Cooldown column is its `alert_cooldown_s` ("-" when it
+never re-pages); a static snapshot carries no alert records, so
+unlike the live dashboard it cannot show the time until the next
+re-page while an endpoint is DOWN — it shows the configured
+cooldown, the same value the dashboard shows for a recovered
+endpoint. The output
 has no external references (no scripts, stylesheets, images or links
 to other hosts), so the file works from any static host or straight
 off disk. It is a snapshot: regenerate it to update it.
@@ -21,6 +29,7 @@ import html
 import os
 import time
 
+from .flap import DEFAULT_THRESHOLD
 from .server import latency_sparkline
 
 # How many recent incidents to list per endpoint.
@@ -123,10 +132,31 @@ def _render_source(history, endpoints, generated, label=None):
         cls = ("up" if status == "UP" else "down" if status == "DOWN"
                else "skipped" if status == "SKIPPED"
                else "maintenance" if status == "MAINTENANCE" else "")
+        # Alert at / Cooldown, next to the Fail streak, exactly as
+        # the dashboard shows them: the endpoint's own
+        # `alert_threshold` (the flap threshold, 3 by default, when
+        # it sets none — the CLI resolves the configured flap
+        # threshold onto the endpoint before the page is written,
+        # so a plain render falls back to the default), so the
+        # streak next to it says how close the endpoint is to
+        # paging; and its `alert_cooldown_s` ("300 s", "-" when it
+        # never re-pages and alerts exactly once per outage). A
+        # static snapshot has no alert records, so there is no
+        # live re-alert countdown to append while the endpoint is
+        # DOWN — the configured cooldown is what the page shows,
+        # the same value the dashboard shows once the endpoint
+        # has recovered.
+        alert_at = ep.get("alert_threshold")
+        if alert_at is None:
+            alert_at = DEFAULT_THRESHOLD
+        cooldown = ep.get("alert_cooldown_s")
+        cooldown_text = f"{cooldown:g} s" if cooldown is not None else "-"
         rows.append(
             f"<tr><td>{html.escape(name)}</td>"
             f"<td class=\"{cls}\">{status}{status_detail}</td>"
             f"<td>{history.consecutive_failures(name)}</td>"
+            f"<td>{alert_at}</td>"
+            f"<td>{cooldown_text}</td>"
             f"<td>{up}</td><td>{day}</td><td>{week}</td><td>{month}</td><td>{latency}</td>"
             f"<td>{latency_sparkline(history, name)}</td><td>{last}</td></tr>"
         )
@@ -159,7 +189,7 @@ def _render_source(history, endpoints, generated, label=None):
                 f"<h3>{html.escape(name)}</h3><ul>{''.join(items)}</ul>"
                 f"<p>Duration histogram: {buckets}</p>")
     body = "\n".join(rows) or \
-        "<tr><td colspan=\"10\">No endpoints configured.</td></tr>"
+        "<tr><td colspan=\"12\">No endpoints configured.</td></tr>"
     if down_count:
         banner = (f"<p class=\"banner down\">{down_count} endpoint"
                   f"{'s' if down_count != 1 else ''} down</p>")
@@ -169,7 +199,8 @@ def _render_source(history, endpoints, generated, label=None):
                       if incident_sections
                       else "<p>No incidents recorded.</p>")
     table = (
-        "<table><tr><th>Endpoint</th><th>Status</th><th>Fail streak</th><th>Uptime</th>"
+        "<table><tr><th>Endpoint</th><th>Status</th><th>Fail streak</th>"
+        "<th>Alert at</th><th>Cooldown</th><th>Uptime</th>"
         "<th>Uptime 24h</th><th>Uptime 7d</th><th>Uptime 30d</th><th>Latency</th>"
         "<th>Latency history</th><th>Last check</th></tr>\n"
         f"{body}</table>")
