@@ -39,7 +39,7 @@ from .maintenance import (active_window, summarize_window,
 from .remote import fetch_remote_status
 from .server import (cert_expiry_snapshot, render_cert_expiry_report,
                      render_downtime_report, render_uptime_report,
-                     serve, uptime_snapshot)
+                     serve, sla_snapshot, uptime_snapshot)
 from .sla import (breaches, monthly_detail, monthly_uptime, parse_month,
                   render_sla_report, render_sla_report_csv,
                   render_sla_report_json, sla_report, validate_sla_targets)
@@ -1681,16 +1681,18 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
                 # that is where an operator picks it up (or pipes it to
                 # sendmail); when SMTP delivery ran, success or failure
                 # is already logged by the sender. The digest also
-                # carries a certificate-expiry section built from the
-                # same snapshot the --cert-expiry-report prints, so it
-                # can never disagree with it — a certificate on its
-                # own never triggers a send, so a quiet window still
-                # sends nothing.
+                # carries a certificate-expiry section and an SLA
+                # breach section, both built from the same snapshots
+                # the --cert-expiry-report and --sla-report print,
+                # so they can never disagree with them — a
+                # certificate or a breach on its own never triggers
+                # a send, so a quiet window still sends nothing.
                 current_down = [ep["name"] for ep in endpoints
                                 if detector.is_down(ep["name"])]
                 sent = alerter.maybe_send(
                     current_down=current_down,
-                    cert_expiry=cert_expiry_snapshot(history, endpoints))
+                    cert_expiry=cert_expiry_snapshot(history, endpoints),
+                    sla_breach=sla_snapshot(history, endpoints))
                 if (sent is not None and sent["email"]
                         and sent["email_ok"] is None):
                     log.info("alert digest email:\n%s", sent["email"])

@@ -329,16 +329,22 @@ endpoint, and serves a small status dashboard over `http.server`.
   endpoint's cert expiry, soonest first, with the summary counts
   (expired, expiring soon, ok, unknown), from the same shared
   `cert_expiry_snapshot` the `--cert-expiry-report` prints, so the
-  digest can never disagree with it — POSTed as JSON to a webhook
+  digest can never disagree with it — plus an SLA breach section:
+  every endpoint's uptime in the current calendar month against
+  its `sla_target`, breached first (worst shortfall first), with
+  the summary counts (breached, met, no target, no data), from the
+  same shared `sla_snapshot` the `--sla-report` prints, so the
+  digest can never disagree with it either — POSTed as JSON to a webhook
   URL and/or rendered
   as a plain-text MIME email message and delivered over SMTP
   (STARTTLS by default, implicit TLS on port 465) when an SMTP
   host is configured; with no SMTP host the rendered message is
   logged instead, so an operator can pipe it to sendmail. A
   failed SMTP delivery is logged and never stops the monitor.
-  The certificate section rides along on a digest that goes out
-  for another reason — a certificate on its own never triggers a
-  send, so a quiet window still sends nothing.
+  The certificate and SLA sections ride along on a digest that
+  goes out for another reason — a certificate or a breach on its
+  own never triggers a send, so a quiet window still sends
+  nothing.
 
 ## What it is not
 
@@ -1817,8 +1823,39 @@ make test   # python3 -m unittest discover -s tests -v
   own never triggers a send — the section rides along on a
   digest that goes out for another reason, so a quiet window
   still sends nothing — done in 0.74.0.
+- [x] SLA breach section in the periodic digest: every digest
+  that goes out carries every endpoint's uptime in the current
+  calendar month against its `sla_target` — breached first
+  (worst shortfall first), with the summary counts (breached,
+  met, no target, no data) — from the same shared `sla_snapshot`
+  the `--sla-report` prints, so the digest can never disagree
+  with it, in the webhook JSON payload and in the rendered email
+  body. A breach on its own never triggers a send — the section
+  rides along on a digest that goes out for another reason, so a
+  quiet window still sends nothing — done in 0.75.0.
 
 ## Changelog
+
+- **0.75.0** — SLA breach section in the periodic digest: the
+  digest gains an `sla_breach` section — every endpoint's uptime
+  in the current calendar month against its `sla_target` from the
+  same shared `sla_snapshot` the `--sla-report` prints (breached
+  first, worst shortfall first, with the summary counts of
+  breached, met, no target, and no data), in the webhook JSON
+  payload and in the rendered email body, so the digest can never
+  disagree with the report or the dashboard. The section is the
+  whole estate in every digest — the email and each
+  per-endpoint-routed webhook POST alike — while only the changes,
+  currently-down, and flapping lists split by routing. Honest
+  limit: the section rides along on a digest that goes out for
+  another reason — a breach on its own never triggers a send, so
+  a quiet window still sends nothing, and like the report it
+  reads the recorded history for the current month, so an
+  endpoint with no checks yet in the month shows no data. Next:
+  the roadmap is exhausted again; the natural next item is the
+  same treatment for latency — a p95 alert section in the
+  periodic digest, from the same shared helpers the dashboard
+  reads.
 
 - **0.74.0** — Certificate-expiry section in the periodic
   digest: the digest gains a `cert_expiry` section — every

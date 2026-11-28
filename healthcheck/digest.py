@@ -256,6 +256,30 @@ def flapping_endpoints(changes, threshold=FLAPPING_CHANGE_THRESHOLD):
                   key=lambda name: (-counts[name], name))
 
 
+def sla_breach_summary(snapshot):
+    """Counts of breached / met / no-target / no-data endpoints in
+    an SLA snapshot (see server.sla_snapshot).
+
+    The same counting the --sla-report's breach list uses — a row
+    is breached when `met` is False, met when `met` is True, no
+    target when it has no `sla_target`, and no data when it has a
+    target but no counted checks in the month — so the digest can
+    never disagree with the report.
+    """
+    breached = met = no_target = no_data = 0
+    for row in snapshot["endpoints"]:
+        if row["target"] is None:
+            no_target += 1
+        elif row["met"] is False:
+            breached += 1
+        elif row["met"] is True:
+            met += 1
+        else:
+            no_data += 1
+    return {"breached": breached, "met": met, "no_target": no_target,
+            "no_data": no_data}
+
+
 def cert_expiry_summary(snapshot):
     """Counts of expired / expiring soon / ok / unknown certificates
     in a cert-expiry snapshot (see server.cert_expiry_snapshot).
@@ -284,7 +308,7 @@ def cert_expiry_summary(snapshot):
 
 
 def build_digest(changes, currently_down, window_start, window_end,
-                 cert_expiry=None):
+                 cert_expiry=None, sla_breach=None):
     """The digest payload for one window.
 
     `changes` are state-change payloads (see alerts.alert_payload);
@@ -297,8 +321,13 @@ def build_digest(changes, currently_down, window_start, window_end,
     expired first, no-certificate-seen last, with the same text the
     dashboard and the --cert-expiry-report show — plus the summary
     counts, so the digest's certificate section can never disagree
-    with either of them. With no snapshot given the payload has no
-    certificate section at all.
+    with either of them. `sla_breach`, when given, is an SLA
+    snapshot (see server.sla_snapshot): its rows are carried
+    verbatim — the same rows the --sla-report prints, with the
+    breach list worst shortfall first — plus the summary counts,
+    so the digest's SLA section can never disagree with it. With
+    no snapshot given the payload has no section of that kind at
+    all.
     """
     in_window = [c for c in changes
                  if window_start <= c["checked_at"] < window_end]
@@ -326,11 +355,42 @@ def build_digest(changes, currently_down, window_start, window_end,
             "endpoints": cert_expiry["endpoints"],
             "summary": cert_expiry_summary(cert_expiry),
         }
+    if sla_breach is not None:
+        digest["sla_breach"] = {
+            "month": sla_breach["month"],
+            "endpoints": sla_breach["endpoints"],
+            "breaches": sla_breach["breaches"],
+            "summary": sla_breach_summary(sla_breach),
+        }
     return digest
 
 
 def _fmt_time(epoch):
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(epoch))
+
+
+def _sla_row_text(row):
+    """One SLA row as the --sla-report renders it: the month's
+    uptime with its check count, then the verdict — MET, BREACH
+    with the shortfall, no target, or no data — so the email can
+    never disagree with the report."""
+    if row["uptime_pct"] is None:
+        uptime = "no data"
+    else:
+        uptime = f"{row['uptime_pct']:.1f}% ({row['checks']} checks)"
+    if row["target"] is None:
+        verdict = "no target"
+    elif row["met"] is None:
+        verdict = "no data"
+    elif row["met"]:
+        verdict = f"MET target {row['target']:.1f}%"
+    else:
+        verdict = (f"BREACH target {row['target']:.1f}% "
+                   f"(short {row['shortfall_pct']:.1f}pp)")
+    # A plain hyphen, not the em dash the --sla-report uses: the
+    # digest body must stay plain ASCII so the MIME message is
+    # sent as readable text, not base64.
+    return f"{row['name']}: {uptime} - {verdict}"
 
 
 def render_digest_body(digest):
@@ -391,6 +451,30 @@ def render_digest_body(digest):
                      f"{summary['expiring_soon']} expiring soon, "
                      f"{summary['ok']} ok, "
                      f"{summary['unknown']} unknown")
+    sla = digest.get("sla_breach")
+    if sla is not None:
+        # The same rows the --sla-report prints, breached first
+        # (worst shortfall first, like the report's breach list),
+        # then the rest in config order, with the same summary
+        # counts — so the email can never disagree with the
+        # report or the dashboard.
+        lines.append("")
+        rows = sla["endpoints"]
+        lines.append(f"SLA breaches ({sla['month']}, "
+                     f"{len(rows)} endpoint(s)):")
+        if not rows:
+            lines.append("  (none)")
+        by_name = {row["name"]: row for row in rows}
+        ordered = [by_name[name] for name in sla["breaches"]]
+        ordered += [row for row in rows
+                    if row["name"] not in sla["breaches"]]
+        for row in ordered:
+            lines.append(f"  - {_sla_row_text(row)}")
+        summary = sla["summary"]
+        lines.append(f"  Summary: {summary['breached']} breached, "
+                     f"{summary['met']} met, "
+                     f"{summary['no_target']} no target, "
+                     f"{summary['no_data']} no data")
     return "\n".join(lines) + "\n"
 
 
@@ -477,7 +561,8 @@ class DigestAlerter:
         self._changes.append(payload)
         return payload
 
-    def maybe_send(self, now=None, current_down=(), cert_expiry=None):
+    def maybe_send(self, now=None, current_down=(), cert_expiry=None,
+                   sla_breach=None):
         """Send the digest if the interval has elapsed.
 
         Returns None when not due, or when the window is empty (no
@@ -486,23 +571,27 @@ class DigestAlerter:
         snapshot (see server.cert_expiry_snapshot): its section
         rides along on a digest that goes out for another reason —
         a certificate on its own never triggers a send, so a quiet
-        window still sends nothing. The section is a global estate
-        summary, so every digest — the email and each routed webhook
-        POST — carries the whole snapshot, with the same summary
-        counts the --cert-expiry-report prints; only the changes,
-        currently-down, and flapping lists are split by routing.
-        Otherwise returns a dict with the digest payload (all
-        endpoints, for the email), whether the webhook delivery
-        succeeded — a single bool when the window went to one
-        webhook, a {url: bool} mapping when per-endpoint routing
-        split it across several, None when no webhook is configured
-        — the rendered email message (None when no email_to is
-        configured), and whether the SMTP delivery succeeded (None
-        when no SMTP host is configured — the rendered message is
-        then the operator's copy, logged by the caller). A failed
-        SMTP delivery never raises and never stops the monitor: it
-        is logged and reported as False, and the window still
-        advances.
+        window still sends nothing. `sla_breach`, when given, is
+        an SLA snapshot (see server.sla_snapshot): its section
+        rides along the same way — a breach on its own never
+        triggers a send, so a quiet window still sends nothing.
+        Both sections are global estate summaries, so every digest
+        — the email and each routed webhook POST — carries the
+        whole snapshot, with the same summary counts the
+        --cert-expiry-report and --sla-report print; only the
+        changes, currently-down, and flapping lists are split by
+        routing. Otherwise returns a dict with the digest payload
+        (all endpoints, for the email), whether the webhook
+        delivery succeeded — a single bool when the window went to
+        one webhook, a {url: bool} mapping when per-endpoint
+        routing split it across several, None when no webhook is
+        configured — the rendered email message (None when no
+        email_to is configured), and whether the SMTP delivery
+        succeeded (None when no SMTP host is configured — the
+        rendered message is then the operator's copy, logged by
+        the caller). A failed SMTP delivery never raises and never
+        stops the monitor: it is logged and reported as False, and
+        the window still advances.
         """
         now = self._now() if now is None else now
         if now - self._window_start < self.config["interval_seconds"]:
@@ -511,7 +600,8 @@ class DigestAlerter:
         self._window_start = now
         digest = build_digest(self._changes, current_down,
                               window_start, window_end,
-                              cert_expiry=cert_expiry)
+                              cert_expiry=cert_expiry,
+                              sla_breach=sla_breach)
         self._changes = []
         if not digest["changes"] and not digest["currently_down"]:
             return None
@@ -521,9 +611,10 @@ class DigestAlerter:
         # digest block's webhook. A group with no changes and
         # nothing down sends nothing — an ongoing outage is still
         # reported, but only to the channel that owns the endpoint.
-        # The certificate section is not split: it is the whole
-        # estate, the same snapshot in every POST, so no digest can
-        # disagree with the --cert-expiry-report's summary counts.
+        # The certificate and SLA sections are not split: they are
+        # the whole estate, the same snapshots in every POST, so no
+        # digest can disagree with the --cert-expiry-report's or
+        # --sla-report's summary counts.
         groups = {}
         for change in digest["changes"]:
             url = self._webhook_for(change["endpoint"])
@@ -541,7 +632,8 @@ class DigestAlerter:
                 continue
             routed = build_digest(group["changes"], group["down"],
                                   window_start, window_end,
-                                  cert_expiry=cert_expiry)
+                                  cert_expiry=cert_expiry,
+                                  sla_breach=sla_breach)
             ok = post_alert(url, routed)
             webhook_results[url] = ok
             if ok:
