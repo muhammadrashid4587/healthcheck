@@ -1680,10 +1680,17 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
                 # configured, the rendered email body goes to the log —
                 # that is where an operator picks it up (or pipes it to
                 # sendmail); when SMTP delivery ran, success or failure
-                # is already logged by the sender.
+                # is already logged by the sender. The digest also
+                # carries a certificate-expiry section built from the
+                # same snapshot the --cert-expiry-report prints, so it
+                # can never disagree with it — a certificate on its
+                # own never triggers a send, so a quiet window still
+                # sends nothing.
                 current_down = [ep["name"] for ep in endpoints
                                 if detector.is_down(ep["name"])]
-                sent = alerter.maybe_send(current_down=current_down)
+                sent = alerter.maybe_send(
+                    current_down=current_down,
+                    cert_expiry=cert_expiry_snapshot(history, endpoints))
                 if (sent is not None and sent["email"]
                         and sent["email_ok"] is None):
                     log.info("alert digest email:\n%s", sent["email"])

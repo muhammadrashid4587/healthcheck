@@ -26,6 +26,7 @@ import time
 from email.message import EmailMessage
 
 from .alerts import alert_payload, post_alert
+from .checker import cert_expiring_soon
 
 log = logging.getLogger("healthcheck.digest")
 
@@ -255,21 +256,56 @@ def flapping_endpoints(changes, threshold=FLAPPING_CHANGE_THRESHOLD):
                   key=lambda name: (-counts[name], name))
 
 
-def build_digest(changes, currently_down, window_start, window_end):
+def cert_expiry_summary(snapshot):
+    """Counts of expired / expiring soon / ok / unknown certificates
+    in a cert-expiry snapshot (see server.cert_expiry_snapshot).
+
+    Expired means the days left are negative; expiring soon means
+    inside the endpoint's warning window and not yet lapsed;
+    unknown means no certificate was ever seen. The same counting
+    the --cert-expiry-report's summary line uses, so the digest can
+    never disagree with it.
+    """
+    expired = soon = ok = unknown = 0
+    generated_at = snapshot["generated_at"]
+    for row in snapshot["endpoints"]:
+        days = row["days_remaining"]
+        if days is None:
+            unknown += 1
+        elif days < 0:
+            expired += 1
+        elif cert_expiring_soon(row["expires_at"], row["warn_days"],
+                                now=generated_at):
+            soon += 1
+        else:
+            ok += 1
+    return {"expired": expired, "expiring_soon": soon, "ok": ok,
+            "unknown": unknown}
+
+
+def build_digest(changes, currently_down, window_start, window_end,
+                 cert_expiry=None):
     """The digest payload for one window.
 
     `changes` are state-change payloads (see alerts.alert_payload);
     only the ones with checked_at inside [window_start, window_end)
     are included — a change outside the window belongs to another
     digest, never this one. `currently_down` is the list of endpoint
-    names confirmed down at window_end.
+    names confirmed down at window_end. `cert_expiry`, when given,
+    is a cert-expiry snapshot (see server.cert_expiry_snapshot):
+    its rows are carried verbatim — already sorted soonest first,
+    expired first, no-certificate-seen last, with the same text the
+    dashboard and the --cert-expiry-report show — plus the summary
+    counts, so the digest's certificate section can never disagree
+    with either of them. With no snapshot given the payload has no
+    certificate section at all.
     """
     in_window = [c for c in changes
                  if window_start <= c["checked_at"] < window_end]
     down = sum(1 for c in in_window if not c["ok"])
     recovered = sum(1 for c in in_window if c["ok"])
     flapping = flapping_endpoints(in_window)
-    return {
+    digest = {
         "type": "digest",
         "window_start": window_start,
         "window_end": window_end,
@@ -284,6 +320,13 @@ def build_digest(changes, currently_down, window_start, window_end):
             "flapping": len(flapping),
         },
     }
+    if cert_expiry is not None:
+        digest["cert_expiry"] = {
+            "generated_at": cert_expiry["generated_at"],
+            "endpoints": cert_expiry["endpoints"],
+            "summary": cert_expiry_summary(cert_expiry),
+        }
+    return digest
 
 
 def _fmt_time(epoch):
@@ -326,6 +369,28 @@ def render_digest_body(digest):
     for name in flapping:
         count = sum(1 for c in changes if c["endpoint"] == name)
         lines.append(f"  - {name} ({count} changes in this window)")
+    cert = digest.get("cert_expiry")
+    if cert is not None:
+        # The same rows the --cert-expiry-report prints, soonest
+        # first, with the same summary counts — so the email can
+        # never disagree with the report or the dashboard.
+        lines.append("")
+        rows = cert["endpoints"]
+        lines.append(f"Certificate expiry ({len(rows)}):")
+        if not rows:
+            lines.append("  (none)")
+        for row in rows:
+            if row["days_remaining"] is None:
+                lines.append(f"  - {row['name']}: - "
+                             f"(no certificate seen)")
+            else:
+                lines.append(f"  - {row['name']}: {row['text']} "
+                             f"(warn {row['warn_days']}d)")
+        summary = cert["summary"]
+        lines.append(f"  Summary: {summary['expired']} expired, "
+                     f"{summary['expiring_soon']} expiring soon, "
+                     f"{summary['ok']} ok, "
+                     f"{summary['unknown']} unknown")
     return "\n".join(lines) + "\n"
 
 
@@ -412,15 +477,24 @@ class DigestAlerter:
         self._changes.append(payload)
         return payload
 
-    def maybe_send(self, now=None, current_down=()):
+    def maybe_send(self, now=None, current_down=(), cert_expiry=None):
         """Send the digest if the interval has elapsed.
 
         Returns None when not due, or when the window is empty (no
         changes, nothing currently down) — an empty digest is noise,
-        not signal. Otherwise returns a dict with the digest
-        payload (all endpoints, for the email), whether the webhook
-        delivery succeeded — a single bool when the window went to
-        one webhook, a {url: bool} mapping when per-endpoint routing
+        not signal. `cert_expiry`, when given, is a cert-expiry
+        snapshot (see server.cert_expiry_snapshot): its section
+        rides along on a digest that goes out for another reason —
+        a certificate on its own never triggers a send, so a quiet
+        window still sends nothing. The section is a global estate
+        summary, so every digest — the email and each routed webhook
+        POST — carries the whole snapshot, with the same summary
+        counts the --cert-expiry-report prints; only the changes,
+        currently-down, and flapping lists are split by routing.
+        Otherwise returns a dict with the digest payload (all
+        endpoints, for the email), whether the webhook delivery
+        succeeded — a single bool when the window went to one
+        webhook, a {url: bool} mapping when per-endpoint routing
         split it across several, None when no webhook is configured
         — the rendered email message (None when no email_to is
         configured), and whether the SMTP delivery succeeded (None
@@ -436,7 +510,8 @@ class DigestAlerter:
         window_start, window_end = self._window_start, now
         self._window_start = now
         digest = build_digest(self._changes, current_down,
-                              window_start, window_end)
+                              window_start, window_end,
+                              cert_expiry=cert_expiry)
         self._changes = []
         if not digest["changes"] and not digest["currently_down"]:
             return None
@@ -446,6 +521,9 @@ class DigestAlerter:
         # digest block's webhook. A group with no changes and
         # nothing down sends nothing — an ongoing outage is still
         # reported, but only to the channel that owns the endpoint.
+        # The certificate section is not split: it is the whole
+        # estate, the same snapshot in every POST, so no digest can
+        # disagree with the --cert-expiry-report's summary counts.
         groups = {}
         for change in digest["changes"]:
             url = self._webhook_for(change["endpoint"])
@@ -462,7 +540,8 @@ class DigestAlerter:
             if not group["changes"] and not group["down"]:
                 continue
             routed = build_digest(group["changes"], group["down"],
-                                  window_start, window_end)
+                                  window_start, window_end,
+                                  cert_expiry=cert_expiry)
             ok = post_alert(url, routed)
             webhook_results[url] = ok
             if ok:

@@ -16,7 +16,7 @@ alert per crossing, and the alert shows on the dashboard and in
 GET /api/status — advisory only, it stays UP.
 """
 
-__version__ = "0.73.0"
+__version__ = "0.74.0"
 
 from .alerts import (CertExpiryAlerter, LatencyP95Alerter, SlaBreachAlerter,
                      WebhookAlerter, alert_payload,
@@ -53,9 +53,9 @@ from .cli import (apply_alert_cooldown_overrides,
                   validate_request_headers,
                   validate_retry_settings, validate_status_page_sources)
 from .digest import (DEFAULT_DIGEST_INTERVAL_SECONDS, DigestAlerter,
-                     build_digest, render_digest_email,
-                     resolve_smtp_config, send_digest_email,
-                     validate_digest_config)
+                     build_digest, cert_expiry_summary,
+                     render_digest_email, resolve_smtp_config,
+                     send_digest_email, validate_digest_config)
 from .flap import DEFAULT_THRESHOLD, FlapDetector, FlapOutcome
 from .incidents import (incidents_report, render_incidents_report,
                         render_incidents_report_csv,
@@ -107,6 +107,7 @@ __all__ = [
     "cert_expiry_alert_payload",
     "cert_expiry_days",
     "cert_expiry_snapshot",
+    "cert_expiry_summary",
     "check_endpoint",
     "check_endpoint_with_retry",
     "check_http",

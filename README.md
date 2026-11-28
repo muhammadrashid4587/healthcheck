@@ -325,12 +325,20 @@ endpoint, and serves a small status dashboard over `http.server`.
   state change, an `alert_digest` block batches confirmed changes
   into a periodic summary (default every 15 minutes) — the changes
   in the window, the endpoints currently down, and any endpoints
-  that flapped — POSTed as JSON to a webhook URL and/or rendered
+  that flapped — plus a certificate-expiry section: every
+  endpoint's cert expiry, soonest first, with the summary counts
+  (expired, expiring soon, ok, unknown), from the same shared
+  `cert_expiry_snapshot` the `--cert-expiry-report` prints, so the
+  digest can never disagree with it — POSTed as JSON to a webhook
+  URL and/or rendered
   as a plain-text MIME email message and delivered over SMTP
   (STARTTLS by default, implicit TLS on port 465) when an SMTP
   host is configured; with no SMTP host the rendered message is
   logged instead, so an operator can pipe it to sendmail. A
   failed SMTP delivery is logged and never stops the monitor.
+  The certificate section rides along on a digest that goes out
+  for another reason — a certificate on its own never triggers a
+  send, so a quiet window still sends nothing.
 
 ## What it is not
 
@@ -1799,8 +1807,38 @@ make test   # python3 -m unittest discover -s tests -v
   opening the dashboard. Sorted soonest first, with a summary
   line counting expired, expiring soon, ok, and unknown — done
   in 0.73.0.
+- [x] Certificate-expiry section in the periodic digest: every
+  digest that goes out carries every endpoint's certificate
+  expiry — soonest first, expired first, no-certificate-seen
+  last, with the summary counts — from the same shared
+  `cert_expiry_snapshot` the `--cert-expiry-report` prints, so
+  the digest can never disagree with it, in the webhook JSON
+  payload and in the rendered email body. A certificate on its
+  own never triggers a send — the section rides along on a
+  digest that goes out for another reason, so a quiet window
+  still sends nothing — done in 0.74.0.
 
 ## Changelog
+
+- **0.74.0** — Certificate-expiry section in the periodic
+  digest: the digest gains a `cert_expiry` section — every
+  endpoint's certificate expiry from the same shared
+  `cert_expiry_snapshot` the `--cert-expiry-report` prints
+  (soonest first, expired first, no-certificate-seen last, with
+  the summary counts of expired, expiring soon, ok, and unknown),
+  in the webhook JSON payload and in the rendered email body, so
+  the digest can never disagree with the report or the dashboard.
+  The section is the whole estate in every digest — the email and
+  each per-endpoint-routed webhook POST alike — while only the
+  changes, currently-down, and flapping lists split by routing.
+  Honest limit: the section rides along on a digest that goes out
+  for another reason — a certificate on its own never triggers a
+  send, so a quiet window still sends nothing, and like the report
+  it reads the last recorded check per endpoint, never probing
+  live. Next: the roadmap is exhausted again; the natural next
+  item is the same treatment for SLA — a breach section in the
+  periodic digest, from the same shared SLA helpers the report
+  reads.
 
 - **0.73.0** — `--cert-expiry-report` one-shot text report: the
   flag prints every endpoint's certificate expiry from the
