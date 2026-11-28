@@ -846,6 +846,42 @@ def cert_expiry_snapshot(history, endpoints, now=None):
     return {"generated_at": ref, "endpoints": rows}
 
 
+def latency_p95_snapshot(history, endpoints, now=None):
+    """p95 latency alert state per endpoint, as a JSON-ready dict.
+
+    Returns {"generated_at": <epoch seconds>, "endpoints": [...]}
+    where each endpoint row has "name", "p95_ms" (the windowed p95
+    over the last 24 hours, or None when no latencies were recorded
+    in the window), "threshold_ms" (the endpoint's
+    `latency_p95_threshold_ms`, or None), "alert" (True when the
+    p95 exceeds the threshold), and "text" — the same
+    `endpoint_latency_p95_alert_text` the dashboard and the static
+    status page read, so the digest can never disagree with them
+    ("ALERT 812.3 > 400 ms", "p95 210.0 / 400 ms",
+    "400 ms (no data)", "-"). Rows are sorted alerting first
+    (worst overage first), then the rest in config order, so the
+    endpoints that need attention are at the top. `now` pins the
+    24-hour window; it defaults to the current time.
+    """
+    ref = time.time() if now is None else now
+    rows = []
+    for ep in endpoints:
+        state = endpoint_latency_p95_alert(history, ep, now=ref)
+        rows.append({
+            "name": ep["name"],
+            "p95_ms": state["p95_ms"],
+            "threshold_ms": state["threshold_ms"],
+            "alert": state["alert"],
+            "text": endpoint_latency_p95_alert_text(
+                history, ep, now=ref),
+        })
+    rows.sort(key=lambda row: (
+        not row["alert"],
+        -(row["p95_ms"] - row["threshold_ms"])
+        if row["alert"] else 0))
+    return {"generated_at": ref, "endpoints": rows}
+
+
 def render_cert_expiry_report(snapshot):
     """Render a cert-expiry snapshot as plain text.
 

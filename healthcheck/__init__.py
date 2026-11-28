@@ -16,7 +16,7 @@ alert per crossing, and the alert shows on the dashboard and in
 GET /api/status — advisory only, it stays UP.
 """
 
-__version__ = "0.75.0"
+__version__ = "0.76.0"
 
 from .alerts import (CertExpiryAlerter, LatencyP95Alerter, SlaBreachAlerter,
                      WebhookAlerter, alert_payload,
@@ -71,7 +71,8 @@ from .server import (cert_expiry_snapshot, endpoint_cert_expiry_text,
                      endpoint_check_interval_text, endpoint_method_text,
                      endpoint_retries_text,
                      format_duration, incidents_snapshot,
-                     latency_sparkline, render_cert_expiry_report,
+                     latency_p95_snapshot, latency_sparkline,
+                     render_cert_expiry_report,
                      render_downtime_report,
                      render_metrics, sla_snapshot,
                      status_snapshot, uptime_snapshot)
@@ -134,6 +135,7 @@ __all__ = [
     "install_reload_handler",
     "load_status_page_source",
     "latency_p95_breach_payload",
+    "latency_p95_snapshot",
     "maintenance_result",
     "make_cert_alerter",
     "make_latency_p95_alerter",

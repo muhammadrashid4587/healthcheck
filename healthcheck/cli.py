@@ -37,7 +37,8 @@ from .incidents import (incidents_report, render_incidents_report,
 from .maintenance import (active_window, summarize_window,
                           validate_maintenance_windows)
 from .remote import fetch_remote_status
-from .server import (cert_expiry_snapshot, render_cert_expiry_report,
+from .server import (cert_expiry_snapshot, latency_p95_snapshot,
+                     render_cert_expiry_report,
                      render_downtime_report, render_uptime_report,
                      serve, sla_snapshot, uptime_snapshot)
 from .sla import (breaches, monthly_detail, monthly_uptime, parse_month,
@@ -1681,18 +1682,22 @@ def monitor_loop(cfg, history, path, args, stop, config_path=None,
                 # that is where an operator picks it up (or pipes it to
                 # sendmail); when SMTP delivery ran, success or failure
                 # is already logged by the sender. The digest also
-                # carries a certificate-expiry section and an SLA
-                # breach section, both built from the same snapshots
-                # the --cert-expiry-report and --sla-report print,
+                # carries a certificate-expiry section, an SLA
+                # breach section, and a latency-p95 alert section,
+                # all built from the same snapshots the
+                # --cert-expiry-report and --sla-report print and
+                # the dashboard's Latency p95 alert column reads,
                 # so they can never disagree with them — a
-                # certificate or a breach on its own never triggers
-                # a send, so a quiet window still sends nothing.
+                # certificate, a breach, or a p95 over its
+                # threshold on its own never triggers a send, so a
+                # quiet window still sends nothing.
                 current_down = [ep["name"] for ep in endpoints
                                 if detector.is_down(ep["name"])]
                 sent = alerter.maybe_send(
                     current_down=current_down,
                     cert_expiry=cert_expiry_snapshot(history, endpoints),
-                    sla_breach=sla_snapshot(history, endpoints))
+                    sla_breach=sla_snapshot(history, endpoints),
+                    latency_p95=latency_p95_snapshot(history, endpoints))
                 if (sent is not None and sent["email"]
                         and sent["email_ok"] is None):
                     log.info("alert digest email:\n%s", sent["email"])

@@ -334,17 +334,24 @@ endpoint, and serves a small status dashboard over `http.server`.
   its `sla_target`, breached first (worst shortfall first), with
   the summary counts (breached, met, no target, no data), from the
   same shared `sla_snapshot` the `--sla-report` prints, so the
-  digest can never disagree with it either — POSTed as JSON to a webhook
+  digest can never disagree with it either — plus a latency-p95
+  alert section: every endpoint's windowed p95 over the last 24
+  hours against its `latency_p95_threshold_ms`, alerting first
+  (worst overage first), with the summary counts (alerting,
+  within threshold, no data, no threshold), from the same shared
+  `latency_p95_snapshot` the dashboard's Latency p95 alert column
+  reads, so the digest can never disagree with it either —
+  POSTed as JSON to a webhook
   URL and/or rendered
   as a plain-text MIME email message and delivered over SMTP
   (STARTTLS by default, implicit TLS on port 465) when an SMTP
   host is configured; with no SMTP host the rendered message is
   logged instead, so an operator can pipe it to sendmail. A
   failed SMTP delivery is logged and never stops the monitor.
-  The certificate and SLA sections ride along on a digest that
-  goes out for another reason — a certificate or a breach on its
-  own never triggers a send, so a quiet window still sends
-  nothing.
+  The certificate, SLA, and latency-p95 sections ride along on a
+  digest that goes out for another reason — a certificate, a
+  breach, or a p95 over its threshold on its own never triggers
+  a send, so a quiet window still sends nothing.
 
 ## What it is not
 
@@ -1833,8 +1840,44 @@ make test   # python3 -m unittest discover -s tests -v
   body. A breach on its own never triggers a send — the section
   rides along on a digest that goes out for another reason, so a
   quiet window still sends nothing — done in 0.75.0.
+- [x] Latency-p95 alert section in the periodic digest: every
+  digest that goes out carries every endpoint's windowed p95
+  latency over the last 24 hours against its
+  `latency_p95_threshold_ms` — alerting first (worst overage
+  first), with the summary counts (alerting, within threshold,
+  no data, no threshold) — from the same shared
+  `latency_p95_snapshot` the dashboard's Latency p95 alert
+  column reads, so the digest can never disagree with it, in the
+  webhook JSON payload and in the rendered email body. A p95
+  over its threshold on its own never triggers a send — the
+  section rides along on a digest that goes out for another
+  reason, so a quiet window still sends nothing — done in
+  0.76.0.
 
 ## Changelog
+
+- **0.76.0** — Latency-p95 alert section in the periodic digest:
+  the digest gains a `latency_p95` section — every endpoint's
+  windowed p95 over the last 24 hours against its
+  `latency_p95_threshold_ms` from the same shared
+  `latency_p95_snapshot` the dashboard's Latency p95 alert
+  column reads (alerting first, worst overage first, with the
+  summary counts of alerting, within threshold, no data, and no
+  threshold), in the webhook JSON payload and in the rendered
+  email body, so the digest can never disagree with the
+  dashboard. The section is the whole estate in every digest —
+  the email and each per-endpoint-routed webhook POST alike —
+  while only the changes, currently-down, and flapping lists
+  split by routing. Honest limit: the section rides along on a
+  digest that goes out for another reason — a p95 over its
+  threshold on its own never triggers a send, so a quiet window
+  still sends nothing, and like the dashboard it reads the
+  recorded latencies for the last 24 hours, so an endpoint with
+  no checks in the window shows no data. Next: the roadmap is
+  exhausted again; the natural next item is a
+  `--latency-p95-report` one-shot text report of every
+  endpoint's p95 against its threshold, from the same shared
+  snapshot.
 
 - **0.75.0** — SLA breach section in the periodic digest: the
   digest gains an `sla_breach` section — every endpoint's uptime

@@ -307,8 +307,35 @@ def cert_expiry_summary(snapshot):
             "unknown": unknown}
 
 
+def latency_p95_summary(snapshot):
+    """Counts of alerting / within-threshold / no-data / no-threshold
+    endpoints in a latency-p95 snapshot (see
+    server.latency_p95_snapshot).
+
+    Alerting means the windowed p95 over the last 24 hours exceeds
+    the endpoint's `latency_p95_threshold_ms`; within means it has
+    a threshold and the p95 is inside it; no data means it has a
+    threshold but no recorded latencies in the window; no threshold
+    means it sets none. The same counting the dashboard's Latency
+    p95 alert column shows, so the digest can never disagree with
+    it.
+    """
+    alerting = within = no_data = no_threshold = 0
+    for row in snapshot["endpoints"]:
+        if row["threshold_ms"] is None:
+            no_threshold += 1
+        elif row["p95_ms"] is None:
+            no_data += 1
+        elif row["alert"]:
+            alerting += 1
+        else:
+            within += 1
+    return {"alerting": alerting, "within": within,
+            "no_data": no_data, "no_threshold": no_threshold}
+
+
 def build_digest(changes, currently_down, window_start, window_end,
-                 cert_expiry=None, sla_breach=None):
+                 cert_expiry=None, sla_breach=None, latency_p95=None):
     """The digest payload for one window.
 
     `changes` are state-change payloads (see alerts.alert_payload);
@@ -325,9 +352,14 @@ def build_digest(changes, currently_down, window_start, window_end,
     snapshot (see server.sla_snapshot): its rows are carried
     verbatim — the same rows the --sla-report prints, with the
     breach list worst shortfall first — plus the summary counts,
-    so the digest's SLA section can never disagree with it. With
-    no snapshot given the payload has no section of that kind at
-    all.
+    so the digest's SLA section can never disagree with it.
+    `latency_p95`, when given, is a latency-p95 snapshot (see
+    server.latency_p95_snapshot): its rows are carried verbatim —
+    alerting first (worst overage first), with the same text the
+    dashboard's Latency p95 alert column shows — plus the summary
+    counts, so the digest's latency section can never disagree
+    with it. With no snapshot given the payload has no section of
+    that kind at all.
     """
     in_window = [c for c in changes
                  if window_start <= c["checked_at"] < window_end]
@@ -361,6 +393,12 @@ def build_digest(changes, currently_down, window_start, window_end,
             "endpoints": sla_breach["endpoints"],
             "breaches": sla_breach["breaches"],
             "summary": sla_breach_summary(sla_breach),
+        }
+    if latency_p95 is not None:
+        digest["latency_p95"] = {
+            "generated_at": latency_p95["generated_at"],
+            "endpoints": latency_p95["endpoints"],
+            "summary": latency_p95_summary(latency_p95),
         }
     return digest
 
@@ -475,6 +513,25 @@ def render_digest_body(digest):
                      f"{summary['met']} met, "
                      f"{summary['no_target']} no target, "
                      f"{summary['no_data']} no data")
+    p95 = digest.get("latency_p95")
+    if p95 is not None:
+        # The same rows the dashboard's Latency p95 alert column
+        # shows, alerting first (worst overage first), with the
+        # same summary counts — so the email can never disagree
+        # with the dashboard.
+        lines.append("")
+        rows = p95["endpoints"]
+        lines.append(f"Latency p95 alerts (24h window, "
+                     f"{len(rows)} endpoint(s)):")
+        if not rows:
+            lines.append("  (none)")
+        for row in rows:
+            lines.append(f"  - {row['name']}: {row['text']}")
+        summary = p95["summary"]
+        lines.append(f"  Summary: {summary['alerting']} alerting, "
+                     f"{summary['within']} within threshold, "
+                     f"{summary['no_data']} no data, "
+                     f"{summary['no_threshold']} no threshold")
     return "\n".join(lines) + "\n"
 
 
@@ -562,7 +619,7 @@ class DigestAlerter:
         return payload
 
     def maybe_send(self, now=None, current_down=(), cert_expiry=None,
-                   sla_breach=None):
+                   sla_breach=None, latency_p95=None):
         """Send the digest if the interval has elapsed.
 
         Returns None when not due, or when the window is empty (no
@@ -575,12 +632,17 @@ class DigestAlerter:
         an SLA snapshot (see server.sla_snapshot): its section
         rides along the same way — a breach on its own never
         triggers a send, so a quiet window still sends nothing.
-        Both sections are global estate summaries, so every digest
-        — the email and each routed webhook POST — carries the
-        whole snapshot, with the same summary counts the
-        --cert-expiry-report and --sla-report print; only the
-        changes, currently-down, and flapping lists are split by
-        routing. Otherwise returns a dict with the digest payload
+        `latency_p95`, when given, is a latency-p95 snapshot (see
+        server.latency_p95_snapshot): its section rides along the
+        same way — a p95 over its threshold on its own never
+        triggers a send, so a quiet window still sends nothing.
+        All three sections are global estate summaries, so every
+        digest — the email and each routed webhook POST — carries
+        the whole snapshot, with the same summary counts the
+        --cert-expiry-report, --sla-report, and the dashboard's
+        Latency p95 alert column show; only the changes,
+        currently-down, and flapping lists are split by routing.
+        Otherwise returns a dict with the digest payload
         (all endpoints, for the email), whether the webhook
         delivery succeeded — a single bool when the window went to
         one webhook, a {url: bool} mapping when per-endpoint
@@ -601,7 +663,8 @@ class DigestAlerter:
         digest = build_digest(self._changes, current_down,
                               window_start, window_end,
                               cert_expiry=cert_expiry,
-                              sla_breach=sla_breach)
+                              sla_breach=sla_breach,
+                              latency_p95=latency_p95)
         self._changes = []
         if not digest["changes"] and not digest["currently_down"]:
             return None
@@ -611,10 +674,11 @@ class DigestAlerter:
         # digest block's webhook. A group with no changes and
         # nothing down sends nothing — an ongoing outage is still
         # reported, but only to the channel that owns the endpoint.
-        # The certificate and SLA sections are not split: they are
-        # the whole estate, the same snapshots in every POST, so no
-        # digest can disagree with the --cert-expiry-report's or
-        # --sla-report's summary counts.
+        # The certificate, SLA, and latency-p95 sections are not
+        # split: they are the whole estate, the same snapshots in
+        # every POST, so no digest can disagree with the
+        # --cert-expiry-report's, --sla-report's, or the
+        # dashboard's summary counts.
         groups = {}
         for change in digest["changes"]:
             url = self._webhook_for(change["endpoint"])
@@ -633,7 +697,8 @@ class DigestAlerter:
             routed = build_digest(group["changes"], group["down"],
                                   window_start, window_end,
                                   cert_expiry=cert_expiry,
-                                  sla_breach=sla_breach)
+                                  sla_breach=sla_breach,
+                                  latency_p95=latency_p95)
             ok = post_alert(url, routed)
             webhook_results[url] = ok
             if ok:
